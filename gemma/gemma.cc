@@ -806,8 +806,11 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
 
     ProjKV(k_offset, v_offset, kv_offset);
 
+    float* HWY_RESTRICT q = activations.q.data() + batch_idx * kHeads * kQKVDim;
+    MatVec<kHeads * kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, 0, x, q,
+                                        pool);
+
     pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
-      ProjQ(head, head * kQKVDim * kModelDim);
       Attn(head, 0);
     });
   }
