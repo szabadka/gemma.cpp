@@ -421,6 +421,45 @@ HWY_NOINLINE void TwoMatVecAdd(
   }
 }
 
+// Two matrices, same vector
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
+HWY_NOINLINE void TwoOfsMatVec(
+    const ArrayT& mat, const size_t mat_ofs0, const size_t mat_ofs1,
+    const VecT* HWY_RESTRICT vec_aligned, float* HWY_RESTRICT out0,
+    float* HWY_RESTRICT out1, hwy::ThreadPool& pool) {
+  PROFILER_ZONE("TwoOfsMatVec");
+
+  const hn::ScalableTag<float> df;
+  constexpr size_t kRowsPerStrip = RowsPerStrip<kOuter>();
+  constexpr size_t kNumStrips = kOuter / kRowsPerStrip;
+  const VecT* add = nullptr;
+
+  // For each entire strip.
+  pool.Run(0, kNumStrips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
+    PROFILER_ZONE("TwoOfsMatVec.lambda");
+    const size_t r0 = strip * kRowsPerStrip;
+    detail::FullDotProductsForStrip<false>(df, mat, mat_ofs0, kInner, r0,
+                                          kRowsPerStrip, vec_aligned, add,
+                                          out0 + r0);
+    detail::FullDotProductsForStrip<false>(df, mat, mat_ofs1, kInner, r0,
+                                          kRowsPerStrip, vec_aligned, add,
+                                          out1 + r0);
+  });
+
+  // Remaining rows
+  const size_t r0 = kNumStrips * kRowsPerStrip;
+  if (r0 < kOuter) {
+    PROFILER_ZONE("TwoOfsMatVec remainder");
+    const size_t num_rows = kOuter - r0;
+    detail::FullDotProductsForStrip<false>(
+        df, mat, mat_ofs0, kInner, r0, num_rows, vec_aligned, add,
+        out0 + r0);
+    detail::FullDotProductsForStrip<false>(
+        df, mat, mat_ofs1, kInner, r0, num_rows, vec_aligned, add,
+        out1 + r0);
+  }
+}
+
 template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
 HWY_NOINLINE void TwoMatVec(const ArrayT& mat0, const ArrayT& mat1,
                             const size_t mat_ofs,

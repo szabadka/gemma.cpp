@@ -720,8 +720,8 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
     float* HWY_RESTRICT k = kv_cache.key_cache.get() + kv_offset;
     float* HWY_RESTRICT v = kv_cache.value_cache.get() + kv_offset;
 
-    TwoOfsMatVecLoop<kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, k_offset,
-                                         v_offset, x, k, v);
+    TwoOfsMatVec<kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, k_offset,
+                                     v_offset, x, k, v, pool);
 
     Rope(k, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
   };
@@ -924,19 +924,17 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
     }
 
     // TODO: sink the loop into these functions, i.e. make them MatMul.
-    pool.Run(
-        0, num_tokens,
-        [&](const uint64_t token_idx, size_t thread_id) HWY_ATTR {
-          AddFrom(activations.att_post2.data() + token_idx * kModelDim,
-                  activations.x.data() + token_idx * kModelDim, kModelDim);
-          RMSNorm(activations.x.data() + token_idx * kModelDim,
-                  layer_weights->pre_ffw_norm_scale.data(),
-                  activations.bf_pre_ffw_rms_out.data() + token_idx * kModelDim,
-                  kModelDim);
-          FFW<kBatchSize>(activations, token_idx, layer_weights, inner_pool);
-          AddFrom(activations.ffw_out.data() + token_idx * kModelDim,
-                  activations.x.data() + token_idx * kModelDim, kModelDim);
-        });
+    for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+      AddFrom(activations.att_post2.data() + token_idx * kModelDim,
+              activations.x.data() + token_idx * kModelDim, kModelDim);
+      RMSNorm(activations.x.data() + token_idx * kModelDim,
+              layer_weights->pre_ffw_norm_scale.data(),
+              activations.bf_pre_ffw_rms_out.data() + token_idx * kModelDim,
+              kModelDim);
+      FFW<kBatchSize>(activations, token_idx, layer_weights, pool);
+      AddFrom(activations.ffw_out.data() + token_idx * kModelDim,
+              activations.x.data() + token_idx * kModelDim, kModelDim);
+    }
   }  // foreach layer
 
   pool.Run(
