@@ -398,15 +398,20 @@ HWY_NOINLINE void TwoMatVecAdd(
   constexpr size_t kNumStrips = kOuter / kRowsPerStrip;
 
   // For each entire strip.
-  pool.Run(0, kNumStrips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
+  pool.Run(0, 2 * kNumStrips, [&](const uint64_t task, size_t thread) HWY_ATTR {
     PROFILER_ZONE("TwoMatVec.lambda");
+    const size_t strip = task >> 1;
+    const size_t midx = task & 1;
     const size_t r0 = strip * kRowsPerStrip;
-    detail::FullDotProductsForStrip<kAdd>(df, mat0, mat_ofs, kInner, r0,
-                                          kRowsPerStrip, vec_aligned, add0,
-                                          out0 + r0);
-    detail::FullDotProductsForStrip<kAdd>(df, mat1, mat_ofs, kInner, r0,
-                                          kRowsPerStrip, vec_aligned, add1,
-                                          out1 + r0);
+    if (midx == 0) {
+      detail::FullDotProductsForStrip<kAdd>(df, mat0, mat_ofs, kInner, r0,
+                                            kRowsPerStrip, vec_aligned, add0,
+                                            out0 + r0);
+    } else {
+      detail::FullDotProductsForStrip<kAdd>(df, mat1, mat_ofs, kInner, r0,
+                                            kRowsPerStrip, vec_aligned, add1,
+                                            out1 + r0);
+    }
   });
 
   // Remaining rows
@@ -435,15 +440,20 @@ HWY_NOINLINE void TwoOfsMatVec(
   const VecT* add = nullptr;
 
   // For each entire strip.
-  pool.Run(0, kNumStrips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
+  pool.Run(0, 2 * kNumStrips, [&](const uint64_t task, size_t thread) HWY_ATTR {
     PROFILER_ZONE("TwoOfsMatVec.lambda");
+    const size_t strip = task >> 1;
+    const size_t midx = task & 1;
     const size_t r0 = strip * kRowsPerStrip;
-    detail::FullDotProductsForStrip<false>(df, mat, mat_ofs0, kInner, r0,
-                                          kRowsPerStrip, vec_aligned, add,
-                                          out0 + r0);
-    detail::FullDotProductsForStrip<false>(df, mat, mat_ofs1, kInner, r0,
-                                          kRowsPerStrip, vec_aligned, add,
-                                          out1 + r0);
+    if (midx == 0) {
+      detail::FullDotProductsForStrip<false>(df, mat, mat_ofs0, kInner, r0,
+                                             kRowsPerStrip, vec_aligned, add,
+                                             out0 + r0);
+    } else {
+      detail::FullDotProductsForStrip<false>(df, mat, mat_ofs1, kInner, r0,
+                                             kRowsPerStrip, vec_aligned, add,
+                                             out1 + r0);
+    }
   });
 
   // Remaining rows
