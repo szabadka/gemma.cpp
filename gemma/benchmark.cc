@@ -85,8 +85,10 @@ std::pair<std::string, int> QueryModel(
     return true;
   };
   if (app.verbosity >= 2) {
-    std::cout << args.max_tokens << " " << args.max_generated_tokens << " "
-              << args.temperature;
+    std::cout << "Max tokens: " << args.max_tokens << "  "
+              << "Max generated tokens: " << args.max_generated_tokens << "  "
+              << "Temperature: " << args.temperature << "  "
+              << "Prompt tokens: " << prompt.size() << std::endl;
   }
   GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
                 args.temperature, prompt, /*abs_pos=*/0, kv_cache, pool,

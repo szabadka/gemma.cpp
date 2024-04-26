@@ -1091,7 +1091,8 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     const double prefill_end = hwy::platform::Now();
     const double prefill_tok_sec =
         static_cast<double>(pos_offset) / (prefill_end - prefill_start);
-    std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]";
+    std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]"
+              << std::endl;
   }
 
   const double gen_start = hwy::platform::Now();
@@ -1103,7 +1104,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   stream_token(token, 0);
   for (size_t generate_pos = 0;
        pos < max_tokens && generate_pos < max_generated_tokens;
-       ++pos, ++pos_offset, ++generate_pos) {
+       ++pos, ++pos_offset) {
     const bool is_generating_phase = pos_offset >= prompt_size - 1;
     Transformer(token, pos, weights, activations, kv_cache, pool, inner_pool,
                 layers_output);
@@ -1124,6 +1125,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
       if (!stream_token(token, activations.logits[token])) {
         token = EOS_ID;
       }
+      ++generate_pos;
     } else {
       // We would take this branch if we were not doing Prefill but would
       // process the tokens of the prompt one at a time.
@@ -1138,7 +1140,8 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
         const double gen_tok_sec =
             static_cast<double>(pos_offset - pos_gen_start) /
             (gen_end - gen_start);
-        std::cout << "\n[ Generation tokens / sec = " << gen_tok_sec << " ]\n";
+        std::cout << "\n[ Generation tokens / sec = " << gen_tok_sec << " ]\n"
+                  << std::endl;
       }
       break;
     }

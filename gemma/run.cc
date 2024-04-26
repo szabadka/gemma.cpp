@@ -118,7 +118,9 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
     ++current_pos;
     // <= since position is incremented before
     if (current_pos <= prompt_size) {
-      std::cerr << "." << std::flush;
+      if (verbosity >= 1) {
+        std::cerr << "." << std::flush;
+      }
     } else if (token == gcpp::EOS_ID) {
       if (!args.multiturn) {
         abs_pos = 0;
@@ -198,8 +200,10 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
 
     prompt_size = prompt.size();
 
-    std::cerr << "\n"
-              << "[ Reading prompt ] " << std::flush;
+    if (verbosity >= 1) {
+      std::cerr << "\n"
+                << "[ Reading prompt ] " << std::flush;
+    }
 
     if constexpr (kVerboseLogTokens) {
       for (int i = 0; i < static_cast<int>(prompt.size()); ++i) {
@@ -218,7 +222,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
                 << "\n"
                 << tok_sec << " tokens / sec" << "\n";
     }
-    std::cout << "\n\n";
+    std::cout << (verbosity >= 1 ? "\n\n" : "\n");
   }
   std::cout
       << "max_tokens (" << args.max_tokens
