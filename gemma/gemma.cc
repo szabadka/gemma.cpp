@@ -757,21 +757,6 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
       float* HWY_RESTRICT v2 = kv_cache.value_cache.get() + cache_offset;
       MulByConstAndAdd(head_att[pos2], v2, att_out, kQKVDim);
     }
-    // linear projection from kQKVDim back to kModelDim, sum projections
-    // across heads
-    float* HWY_RESTRICT head_out =
-        head == 0
-            ? activations.att_post2.data() + batch_idx * kModelDim
-            : activations.att_post1.data() + head * kBatchSize * kModelDim;
-    if (head == 0) {
-      MatVecAddLoop<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
-          layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim, att_out,
-          layer_weights->attention_output_biases.data(), head_out);
-    } else {
-      MatVecLoop<kModelDim, kQKVDim>(layer_weights->attn_vec_einsum_w,
-                                     head * kModelDim * kQKVDim, att_out,
-                                     head_out);
-    }
   };
 
   if constexpr (kHeads == kKVHeads) {
@@ -815,12 +800,30 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
     });
   }
 
-  // accumulate output across all heads into att_post2. head 0 already wrote
-  // directly to att_post2.
+#if 1
+  float* HWY_RESTRICT att_out =
+      activations.att_out.data() + batch_idx * kHeads * kQKVDim;
+  float* HWY_RESTRICT layer_out =
+      activations.att_post2.data() + batch_idx * kModelDim;
+  MatVecAdd<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
+      layer_weights->attn_vec_einsum_w, 0, att_out,
+      layer_weights->attention_output_biases.data(), layer_out, pool);
   for (size_t head = 1; head < kHeads; ++head) {
-    AddFrom(activations.att_post1.data() + head * kBatchSize * kModelDim,
-            activations.att_post2.data() + batch_idx * kModelDim, kModelDim);
+    float* HWY_RESTRICT head_out =
+        activations.att_post1.data() + head * kBatchSize * kModelDim;
+    MatVec<kModelDim, kQKVDim>(
+        layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
+        att_out + head * kQKVDim, head_out, pool);
+    AddFrom(head_out, layer_out, kModelDim);
   }
+#else
+  // TODO(szabadka) Use this after re-arragning the weights.
+  MatVecAdd<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kHeads * kQKVDim>(
+      layer_weights->attn_vec_einsum_w, 0,
+      activations.att_out.data() + batch_idx * kHeads * kQKVDim,
+      layer_weights->attention_output_biases.data(),
+      activations.att_post2.data() + batch_idx * kModelDim, pool);
+#endif
 }
 
 template <size_t kBatchSize, typename LayerT, typename TConfig>
@@ -1067,6 +1070,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   // In single-turn (non-chat) usage, pos and pos_offset start at 0 and are
   // always equal.
   size_t pos_offset = 0;  // offset relative to pos
+#if 1
   const double prefill_start = hwy::platform::Now();
 
   // Prefill stops before prompt_size - 1 since the last prompt token is the
@@ -1095,6 +1099,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]"
               << std::endl;
   }
+#endif
 
   const double gen_start = hwy::platform::Now();
 
