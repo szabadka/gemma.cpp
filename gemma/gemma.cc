@@ -1579,13 +1579,17 @@ void InitWeightsT(gcpp::Model model, WeightStorageT& weights,
                   InitMode mode, std::mt19937* gen) {
   switch (model) {
     case Model::GEMMA_2B:
-      return InitWeights<ConfigGemma2B>(mode, weights, gen);
+      InitWeights<ConfigGemma2B>(mode, weights, gen);
+      break;
     case Model::GEMMA_7B:
-      return InitWeights<ConfigGemma7B>(mode, weights, gen);
+      InitWeights<ConfigGemma7B>(mode, weights, gen);
+      break;
     case Model::GRIFFIN_2B:
-      return InitWeights<ConfigGriffin2B>(mode, weights, gen);
+      InitWeights<ConfigGriffin2B>(mode, weights, gen);
+      break;
     case Model::GEMMA_TINY:
-      return InitWeights<ConfigGemmaTiny>(mode, weights, gen);
+      InitWeights<ConfigGemmaTiny>(mode, weights, gen);
+      break;
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -1630,13 +1634,48 @@ void UpdateWeightsT(Model model, const WeightStorageT& grad, float scale,
                    WeightStorageT& weights, hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
-      return UpdateWeights<ConfigGemma2B>(grad, scale, weights, pool);
+      UpdateWeights<ConfigGemma2B>(grad, scale, weights, pool);
+      break;
     case Model::GEMMA_7B:
-      return UpdateWeights<ConfigGemma7B>(grad, scale, weights, pool);
+      UpdateWeights<ConfigGemma7B>(grad, scale, weights, pool);
+      break;
     case Model::GRIFFIN_2B:
-      return UpdateWeights<ConfigGriffin2B>(grad, scale, weights, pool);
+      UpdateWeights<ConfigGriffin2B>(grad, scale, weights, pool);
+      break;
     case Model::GEMMA_TINY:
-      return UpdateWeights<ConfigGemmaTiny>(grad, scale, weights, pool);
+      UpdateWeights<ConfigGemmaTiny>(grad, scale, weights, pool);
+      break;
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
+template <typename TConfig>
+float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
+                                     const WeightStorageT& weights,
+                                     WeightStorageT& grad,
+                                     hwy::ThreadPool& pool) {
+  return 0.0f;
+}
+
+float CrossEntropyLossWithGradUpdateT(const std::vector<int>& prompt,
+                                      Model model,
+                                      const WeightStorageT& weights,
+                                      WeightStorageT& grad,
+                                      hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return CrossEntropyLossWithGradUpdate<ConfigGemma2B>(
+          prompt, weights, grad, pool);
+    case Model::GEMMA_7B:
+      return CrossEntropyLossWithGradUpdate<ConfigGemma7B>(
+          prompt, weights, grad, pool);
+    case Model::GRIFFIN_2B:
+      return CrossEntropyLossWithGradUpdate<ConfigGriffin2B>(
+          prompt, weights, grad, pool);
+    case Model::GEMMA_TINY:
+      return CrossEntropyLossWithGradUpdate<ConfigGemmaTiny>(
+          prompt, weights, grad, pool);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -1653,6 +1692,7 @@ HWY_EXPORT(AllocateWeightsT);
 HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(UpdateWeightsT);
+HWY_EXPORT(CrossEntropyLossWithGradUpdateT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
@@ -1855,7 +1895,8 @@ float CrossEntropyLossWithGradUpdate(
     const std::vector<int>& prompt, const Model& model,
     const WeightStorageT& weights, WeightStorageT& grad,
     hwy::ThreadPool& pool) {
-  return 0.0;
+  return HWY_DYNAMIC_DISPATCH(CrossEntropyLossWithGradUpdateT)(
+      prompt, model, weights, grad, pool);
 }
 
 namespace {
