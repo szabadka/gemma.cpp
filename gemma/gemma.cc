@@ -1443,6 +1443,8 @@ WeightStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
       return AllocateWeights<ConfigGemma7B>(pool);
     case Model::GRIFFIN_2B:
       return AllocateWeights<ConfigGriffin2B>(pool);
+    case Model::GEMMA_TINY:
+      return AllocateWeights<ConfigGemmaTiny>(pool);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -1534,6 +1536,8 @@ void LogWeightStatsT(gcpp::Model model, const WeightStorageT& weights) {
       return LogWeightStats<ConfigGemma7B>(weights);
     case Model::GRIFFIN_2B:
       return LogWeightStats<ConfigGriffin2B>(weights);
+    case Model::GEMMA_TINY:
+      return LogWeightStats<ConfigGemmaTiny>(weights);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -1752,13 +1756,16 @@ float CrossEntropyLossWithGradUpdate(
 
 namespace {
 constexpr const char* kModelFlags[] = {"2b-pt", "7b-pt", "gr2b-pt",
-                                       "2b-it", "7b-it", "gr2b-it"};
+                                       "2b-it", "7b-it", "gr2b-it",
+                                       "tiny"};
 constexpr Model kModelTypes[] = {Model::GEMMA_2B,   Model::GEMMA_7B,
                                  Model::GRIFFIN_2B, Model::GEMMA_2B,
-                                 Model::GEMMA_7B,   Model::GRIFFIN_2B};
+                                 Model::GEMMA_7B,   Model::GRIFFIN_2B,
+                                 Model::GEMMA_TINY};
 constexpr ModelTraining kModelTraining[] = {
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_PT, ModelTraining::GEMMA_PT,
-    ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT};
+    ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT,
+    ModelTraining::GEMMA_IT};
 }  // namespace
 
 const char* ParseModelTypeAndTraining(const std::string& model_flag,

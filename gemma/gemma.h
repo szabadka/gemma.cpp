@@ -52,7 +52,7 @@ struct KVCache {
 };
 
 // Model variants: see configs.h for details.
-enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B };
+enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
 // Returns error string or nullptr if OK.
