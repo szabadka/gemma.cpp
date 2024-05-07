@@ -179,6 +179,16 @@ struct Weights {
 };
 
 template <typename TConfig>
+WeightStorageT AllocateWeights(hwy::ThreadPool& pool) {
+  using TWeights = Weights<TConfig>;
+  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
+      hwy::AllocateAligned<uint8_t>(sizeof(TWeights));
+  TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
+  new (&weights->layer_ptrs) LayerPointers<TConfig>(pool);
+  return weights_u8;
+}
+
+template <typename TConfig>
 hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
     const Path& checkpoint, hwy::ThreadPool& pool,
     bool scale_for_compression = false) {
@@ -188,11 +198,8 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
               checkpoint.path.c_str());
   }
 
-  using TWeights = Weights<TConfig>;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
-      hwy::AllocateAligned<uint8_t>(sizeof(TWeights));
-  TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
-  new (&weights->layer_ptrs) LayerPointers<TConfig>(pool);
+  WeightStorageT weights_u8 = AllocateWeights<TConfig>(pool);
+  auto* weights = reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
 
   size_t scale_pos = 0;
   FILE* fptr;
@@ -1427,6 +1434,19 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeightsT(gcpp::Model model,
   }
 }
 
+WeightStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return AllocateWeights<ConfigGemma2B>(pool);
+    case Model::GEMMA_7B:
+      return AllocateWeights<ConfigGemma7B>(pool);
+    case Model::GRIFFIN_2B:
+      return AllocateWeights<ConfigGriffin2B>(pool);
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 template <class TConfig>
 void CompressWeights(const Path& weights_path,
                      const Path& compressed_weights_path,
@@ -1482,6 +1502,7 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 
+HWY_EXPORT(AllocateWeightsT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
@@ -1661,21 +1682,20 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
   return result;
 }
 
-WeightStorageT AllocateWeights(Model type) {
-  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8;
-  return weights_u8;
+WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {
+  return HWY_DYNAMIC_DISPATCH(AllocateWeightsT)(model, pool);
 }
 
-void InitWeights(Model type, WeightStorageT& weights,
-                 InitMode init_mode, std::mt19937* gen) {
+void InitWeights(Model model, WeightStorageT& weights,
+                 InitMode init_mode, hwy::ThreadPool& pool, std::mt19937* gen) {
 }
 
-void UpdateWeights(Model type, const WeightStorageT& grad, float scale,
-                   WeightStorageT& weights) {
+void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
+                   WeightStorageT& weights, hwy::ThreadPool& pool) {
 }
 
 float CrossEntropyLossWithGradUpdate(
-    const std::vector<int>& prompt, const Model& type,
+    const std::vector<int>& prompt, const Model& model,
     const WeightStorageT& weights, WeightStorageT& grad,
     hwy::ThreadPool& pool) {
   return 0.0;

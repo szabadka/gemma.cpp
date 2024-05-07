@@ -117,17 +117,17 @@ void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
   std::mt19937 gen(42);
 
-  WeightStorageT weights = AllocateWeights(args.model_type);
-  WeightStorageT grad = AllocateWeights(args.model_type);
+  WeightStorageT weights = AllocateWeights(args.model_type, pool);
+  WeightStorageT grad = AllocateWeights(args.model_type, pool);
 
-  InitWeights(args.model_type, weights, InitMode::RAND_INIT, &gen);
+  InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
 
   constexpr size_t kBatchSize = 16;
   float learning_rate = 0.001f;
 
   ReverseSequenceSampler training_task(10);
   for (;;) {
-    InitWeights(args.model_type, grad, InitMode::ZERO_INIT);
+    InitWeights(args.model_type, grad, InitMode::ZERO_INIT, pool);
     float total_loss = 0.0f;
     for (size_t i = 0; i < kBatchSize; ++i) {
       std::vector<int> prompt = training_task.Sample(gen);
@@ -137,7 +137,7 @@ void Run(Args& args) {
     }
     total_loss /= kBatchSize;
     const float scale = learning_rate / kBatchSize;
-    UpdateWeights(args.model_type, grad, scale, weights);
+    UpdateWeights(args.model_type, grad, scale, weights, pool);
     printf("total_loss: %f\n", total_loss);
     if (total_loss < 0.01f) {
       break;

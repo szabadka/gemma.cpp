@@ -125,16 +125,17 @@ using WeightStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
 
 enum class InitMode { RAND_INIT, ZERO_INIT };
 
-WeightStorageT AllocateWeights(Model type);
+WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
 
-void InitWeights(Model type, WeightStorageT& weights,
-                 InitMode init_mode, std::mt19937* gen = nullptr);
+void InitWeights(Model model, WeightStorageT& weights,
+                 InitMode init_mode, hwy::ThreadPool& pool,
+                 std::mt19937* gen = nullptr);
 
-void UpdateWeights(Model type, const WeightStorageT& grad, float scale,
-                   WeightStorageT& weights);
+void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
+                   WeightStorageT& weights, hwy::ThreadPool& pool);
 
 float CrossEntropyLossWithGradUpdate(
-    const std::vector<int>& prompt, const Model& type,
+    const std::vector<int>& prompt, const Model& model,
     const WeightStorageT& weights, WeightStorageT& grad,
     hwy::ThreadPool& pool);
 
