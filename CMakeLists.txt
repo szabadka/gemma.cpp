@@ -125,3 +125,6 @@ endif()  # GEMMA_ENABLE_TESTS
 
 add_executable(compress_weights gemma/compress_weights.cc)
 target_link_libraries(compress_weights libgemma hwy hwy_contrib)
+
+add_executable(optimize_weights gemma/optimize_weights.cc)
+target_link_libraries(optimize_weights libgemma hwy hwy_contrib)

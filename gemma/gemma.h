@@ -121,6 +121,23 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);
 
+using WeightStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
+
+enum class InitMode { RAND_INIT, ZERO_INIT };
+
+WeightStorageT AllocateWeights(Model type);
+
+void InitWeights(Model type, WeightStorageT& weights,
+                 InitMode init_mode, std::mt19937* gen = nullptr);
+
+void UpdateWeights(Model type, const WeightStorageT& grad, float scale,
+                   WeightStorageT& weights);
+
+float CrossEntropyLossWithGradUpdate(
+    const std::vector<int>& prompt, const Model& type,
+    const WeightStorageT& weights, WeightStorageT& grad,
+    hwy::ThreadPool& pool);
+
 constexpr int EOS_ID = 1;
 
 }  // namespace gcpp
