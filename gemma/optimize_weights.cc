@@ -122,6 +122,9 @@ void Run(Args& args) {
 
   InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
 
+  printf("Initial weights:\n");
+  LogWeightStats(args.model_type, weights);
+
   constexpr size_t kBatchSize = 16;
   float learning_rate = 0.001f;
 
@@ -143,6 +146,9 @@ void Run(Args& args) {
       break;
     }
   }
+
+  printf("Final weights:\n");
+  LogWeightStats(args.model_type, weights);
 }
 
 }  // namespace gcpp

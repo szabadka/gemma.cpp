@@ -180,16 +180,17 @@ class CacheLoader {
   // Called for each tensor, enqueues read requests.
   template <typename MatT, size_t kCapacity>
   void operator()(const char* name, const float* null,
-                  CompressedArray<MatT, kCapacity>& compressed) {
+                  CompressedArray<MatT, kCapacity>* compressed) {
     HWY_DASSERT(null == nullptr);
+    HWY_DASSERT(compressed != nullptr);
 
     // Skip if reader_ is invalid or any load failed: we will regenerate
     // everything because it's rare to update only a few tensors.
     if (err_ != 0) return;
 
-    err_ = reader_.Enqueue(CacheKey<MatT>(name), compressed.data(),
-                           compressed.CompressedSize());
-    compressed.set_scale(1.0f);
+    err_ = reader_.Enqueue(CacheKey<MatT>(name), compressed->data(),
+                           compressed->CompressedSize());
+    compressed->set_scale(1.0f);
     if (err_ != 0) {
       fprintf(stderr, "Failed to read cache %s (error %d)\n", name, err_);
     }

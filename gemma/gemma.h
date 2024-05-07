@@ -127,6 +127,8 @@ enum class InitMode { RAND_INIT, ZERO_INIT };
 
 WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
 
+void LogWeightStats(Model model, const WeightStorageT& weights);
+
 void InitWeights(Model model, WeightStorageT& weights,
                  InitMode init_mode, hwy::ThreadPool& pool,
                  std::mt19937* gen = nullptr);

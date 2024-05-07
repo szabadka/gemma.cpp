@@ -502,12 +502,13 @@ class Compressor {
   // Called for each tensor; compresses it and stores to the cache.
   template <typename MatT, size_t kCapacity>
   void operator()(const char* name, const float* weights,
-                  CompressedArray<MatT, kCapacity>& compressed) {
+                  CompressedArray<MatT, kCapacity>* compressed) {
     fprintf(stderr, "Regenerating %s (%zuM), please wait\n", name,
             kCapacity / (1000 * 1000));
-    Compress(weights, kCapacity, work_, kCapacity, compressed.data(), 0, pool_);
-    writer_.Add(CacheKey<MatT>(name), compressed.data(),
-                compressed.CompressedSize());
+    Compress(weights, kCapacity, work_, kCapacity, compressed->data(), 0,
+             pool_);
+    writer_.Add(CacheKey<MatT>(name), compressed->data(),
+                compressed->CompressedSize());
   }
 
   void AddScales(float* scales, size_t len) {
