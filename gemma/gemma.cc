@@ -1591,6 +1591,57 @@ void InitWeightsT(gcpp::Model model, WeightStorageT& weights,
   }
 }
 
+template<size_t kCapacity>
+void UpdateTensor(const std::array<float, kCapacity>& grad, float scale,
+                  std::array<float, kCapacity>& weights) {
+  // TODO(szabadka) SIMDify this.
+  for (size_t i = 0; i < kCapacity; ++i) {
+    weights[i] += scale * grad[i];
+  }
+}
+
+template <typename TConfig>
+void UpdateWeights(const WeightStorageT& grad_u8, float scale,
+                   WeightStorageT& weights_u8, hwy::ThreadPool& pool) {
+  const auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
+  auto* weights = reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
+
+  UpdateTensor(grad.embedder_input_embedding, scale,
+               weights->embedder_input_embedding);
+  UpdateTensor(grad.final_norm_scale, scale, weights->final_norm_scale);
+
+  pool.Run(0, TConfig::kLayers, [&](uint64_t idx, size_t /*thread*/) {
+    const Layer<TConfig>* gl = grad.GetLayer(idx);
+    Layer<TConfig>* wl = weights->GetLayer(idx);
+
+#define UPDATE_FUNC(member) UpdateTensor(gl->member, scale, wl->member);
+    // TODO(szabadka) Implement it for Griffin as well.
+    UPDATE_FUNC(pre_ffw_norm_scale);
+    UPDATE_FUNC(gating_einsum_w);
+    UPDATE_FUNC(linear_w);
+    UPDATE_FUNC(qkv_einsum_w);
+    UPDATE_FUNC(attn_vec_einsum_w);
+    UPDATE_FUNC(pre_attention_norm_scale);
+#undef UPDATE_FUNC
+  });
+}
+
+void UpdateWeightsT(Model model, const WeightStorageT& grad, float scale,
+                   WeightStorageT& weights, hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return UpdateWeights<ConfigGemma2B>(grad, scale, weights, pool);
+    case Model::GEMMA_7B:
+      return UpdateWeights<ConfigGemma7B>(grad, scale, weights, pool);
+    case Model::GRIFFIN_2B:
+      return UpdateWeights<ConfigGriffin2B>(grad, scale, weights, pool);
+    case Model::GEMMA_TINY:
+      return UpdateWeights<ConfigGemmaTiny>(grad, scale, weights, pool);
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -1601,6 +1652,7 @@ namespace gcpp {
 HWY_EXPORT(AllocateWeightsT);
 HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(InitWeightsT);
+HWY_EXPORT(UpdateWeightsT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
@@ -1795,6 +1847,8 @@ void InitWeights(Model model, WeightStorageT& weights,
 
 void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
                    WeightStorageT& weights, hwy::ThreadPool& pool) {
+  return HWY_DYNAMIC_DISPATCH(UpdateWeightsT)(model, grad, scale, weights,
+                                              pool);
 }
 
 float CrossEntropyLossWithGradUpdate(

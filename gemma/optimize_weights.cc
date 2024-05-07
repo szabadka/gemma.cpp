@@ -139,7 +139,11 @@ void Run(Args& args) {
           prompt, args.model_type, weights, grad, pool);
     }
     total_loss /= kBatchSize;
-    const float scale = learning_rate / kBatchSize;
+
+    printf("Batch gradient:\n");
+    LogWeightStats(args.model_type, grad);
+
+    const float scale = -learning_rate / kBatchSize;
     UpdateWeights(args.model_type, grad, scale, weights, pool);
     printf("total_loss: %f\n", total_loss);
     if (total_loss < 0.01f) {
