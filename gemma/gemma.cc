@@ -1304,7 +1304,7 @@ float ComputeCrossEntropyGriffin2B(GemmaImpl<ConfigGriffin2B>& gemma,
 //
 // This avoids repeating the list of tensors between loading and compressing.
 template <class TConfig, class Func>
-void ForEachTensor(const Weights<TConfig>* weights,
+void ForEachTensor(Weights<TConfig>* weights,
                    CompressedWeights<TConfig>* c_weights, Func& func) {
   func("c_embedding",
        weights ? weights->embedder_input_embedding.data() : nullptr,
@@ -1316,7 +1316,7 @@ void ForEachTensor(const Weights<TConfig>* weights,
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    const Layer<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
+    Layer<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
     CompressedLayer<TConfig>* layer_weights =
         c_weights ? c_weights->GetLayer(idx) : nullptr;
 
@@ -1522,7 +1522,6 @@ class WeightLogger {
 template <typename TConfig>
 void LogWeightStats(const WeightStorageT& weights_u8) {
   auto* weights = reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
-  size_t num_layers = weights->layer_ptrs.layers.size();
   WeightLogger logger;
   ForEachTensor<TConfig>(weights, nullptr, logger);
   printf("%-20s  %12zu\n", "Total", logger.total_weights);
@@ -1543,6 +1542,55 @@ void LogWeightStatsT(gcpp::Model model, const WeightStorageT& weights) {
   }
 }
 
+class WeightInitializer {
+ public:
+  WeightInitializer(InitMode mode, std::mt19937* gen)
+      : mode_(mode), dist_(0.0f, 1.0f), gen_(gen) {}
+
+  template <typename MatT, size_t kCapacity>
+  void operator()(const char* name, float* data,
+                  CompressedArray<MatT, kCapacity>* compressed) {
+    if (mode_ == InitMode::RAND_INIT) {
+      for (size_t i = 0; i < kCapacity; ++i) {
+        data[i] = dist_(*gen_);
+      }
+    } else if (mode_ == InitMode::ZERO_INIT) {
+      memset(data, 0, kCapacity * sizeof(data[0]));
+    }
+  }
+ private:
+  InitMode mode_;
+  std::normal_distribution<float> dist_;
+  std::mt19937* gen_;
+};
+
+template <typename TConfig>
+void InitWeights(InitMode mode, WeightStorageT& weights_u8,
+                 std::mt19937* gen) {
+  auto* weights = reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
+  // TODO(szabadka) Use the same weight initialization method as in the python
+  // version.
+  // TODO(szabadka) Implement multi-threaded initialization.
+  WeightInitializer init(mode, gen);
+  ForEachTensor<TConfig>(weights, nullptr, init);
+}
+
+void InitWeightsT(gcpp::Model model, WeightStorageT& weights,
+                  InitMode mode, std::mt19937* gen) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return InitWeights<ConfigGemma2B>(mode, weights, gen);
+    case Model::GEMMA_7B:
+      return InitWeights<ConfigGemma7B>(mode, weights, gen);
+    case Model::GRIFFIN_2B:
+      return InitWeights<ConfigGriffin2B>(mode, weights, gen);
+    case Model::GEMMA_TINY:
+      return InitWeights<ConfigGemmaTiny>(mode, weights, gen);
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -1552,6 +1600,7 @@ namespace gcpp {
 
 HWY_EXPORT(AllocateWeightsT);
 HWY_EXPORT(LogWeightStatsT);
+HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
@@ -1741,6 +1790,7 @@ void LogWeightStats(Model model, const WeightStorageT& weights) {
 
 void InitWeights(Model model, WeightStorageT& weights,
                  InitMode init_mode, hwy::ThreadPool& pool, std::mt19937* gen) {
+  return HWY_DYNAMIC_DISPATCH(InitWeightsT)(model, weights, init_mode, gen);
 }
 
 void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
