@@ -1882,7 +1882,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       const auto* layer_weights = weights.GetLayer(layer);
       RMSNorm(activations.x.data() + pos * kModelDim,
               layer_weights->pre_attention_norm_scale.data(),
-              activations.pre_att_rms_out.data(), kModelDim);
+              activations.pre_att_rms_out.data() + pos * kModelDim, kModelDim);
       size_t num_tokens = 1;
       size_t batch_start = pos;
       constexpr int kBatchSize = 1;
@@ -1898,11 +1898,10 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
 
       // Multi-Query Attention
       for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-        const size_t pos = batch_start + batch_idx;
-        float* x = activations.pre_att_rms_out.data() + batch_idx * kModelDim;
+        float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
 
         float* HWY_RESTRICT q =
-            activations.q.data() + batch_idx * kHeads * kQKVDim;
+            activations.q.data() + pos * kHeads * kQKVDim;
         MatVec<kHeads * kQKVDim, kModelDim>(
             layer_weights->qkv_einsum_w, 0, x,
             activations.even_odd.data(), q, pool);
@@ -1919,14 +1918,12 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       const size_t num_tasks = kHeads * num_tokens;
       pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
         const size_t head = task % kHeads;
-        const size_t batch_idx = task / kHeads;
         float* HWY_RESTRICT q =
-            activations.q.data() + (batch_idx * kHeads + head) * kQKVDim;
-        const size_t pos = batch_start + batch_idx;
+            activations.q.data() + (pos * kHeads + head) * kQKVDim;
         // Calculate scores
         float* HWY_RESTRICT head_att = activations.att.data() +
                                        head * kSeqLen +
-                                       batch_idx * kHeads * kSeqLen;
+                                       pos * kHeads * kSeqLen;
 
         Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
         MulByConst(kQueryScale, q, kQKVDim);
@@ -1946,7 +1943,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
         // Weighted summation
         float* HWY_RESTRICT att_out =
             activations.att_out.data() + head * kQKVDim +
-            batch_idx * kHeads * kQKVDim;
+            pos * kHeads * kQKVDim;
         hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
         for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
           const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
@@ -1960,9 +1957,9 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
 
       for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
         float* HWY_RESTRICT att_out =
-            activations.att_out.data() + batch_idx * kHeads * kQKVDim;
+            activations.att_out.data() + pos * kHeads * kQKVDim;
         float* HWY_RESTRICT layer_out =
-            activations.att_post2.data() + batch_idx * kModelDim;
+            activations.att_post2.data() + pos * kModelDim;
         MatVec<kModelDim, kQKVDim>(
             layer_weights->attn_vec_einsum_w, 0, att_out,
             activations.even_odd.data(), layer_out, pool);
@@ -1977,7 +1974,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
         }
       }
 
-      AddFrom(activations.att_post2.data(),
+      AddFrom(activations.att_post2.data() + pos * kModelDim,
               activations.x.data() + pos * kModelDim, kModelDim);
       RMSNorm(activations.x.data() + pos * kModelDim,
               layer_weights->pre_ffw_norm_scale.data(),
