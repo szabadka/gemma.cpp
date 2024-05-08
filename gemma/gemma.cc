@@ -1685,6 +1685,8 @@ struct ForwardPass {
   std::array<float, kSeqLen * kModelDim> final_layer_output;
   std::array<float, kSeqLen * kModelDim> final_norm_output;
   std::array<float, kSeqLen * kVocabSize> logits;
+
+  std::array<float, kModelDim * kMaxThreads> even_odd;
 };
 
 template <typename TConfig>
@@ -1764,7 +1766,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       float* HWY_RESTRICT q = activations.q.data() + pos * kHeads * kQKVDim;
       MatVec<kHeads * kQKVDim, kModelDim>(
           layer_weights->qkv_einsum_w, 0, x,
-          activations.even_odd.data(), q, pool);
+          forward->even_odd.data(), q, pool);
 
       const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
       const size_t kv_offset = cache_pos * kCachePosSize +
@@ -1772,7 +1774,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
       MatVec<kQKVDim * 2, kModelDim>(layer_weights->qkv_einsum_w,
                                      kHeads * kQKVDim * kModelDim, x,
-                                     activations.even_odd.data(), kv, pool);
+                                     forward->even_odd.data(), kv, pool);
       Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
     }
 
@@ -1824,14 +1826,14 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
           activations.att_post2.data() + pos * kModelDim;
       MatVec<kModelDim, kQKVDim>(
           layer_weights->attn_vec_einsum_w, 0, att_out,
-          activations.even_odd.data(), layer_out, pool);
+          forward->even_odd.data(), layer_out, pool);
       for (size_t head = 1; head < kHeads; ++head) {
         float* HWY_RESTRICT head_out =
             activations.att_post1.data() + head * kSeqLen * kModelDim;
         MatVec<kModelDim, kQKVDim>(
             layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
             att_out + head * kQKVDim,
-            activations.even_odd.data(), head_out, pool);
+            forward->even_odd.data(), head_out, pool);
         AddFrom(head_out, layer_out, kModelDim);
       }
     }
@@ -1849,7 +1851,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
     }
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-      float* HWY_RESTRICT even_odd = activations.even_odd.data();
+      float* HWY_RESTRICT even_odd = forward->even_odd.data();
 
       const size_t hidden_offset = pos * kFFHiddenDim * 2;
       PROFILER_ZONE("Gen.FFW.GatedGELU");
@@ -1895,7 +1897,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
     MatVec<kVocabSize, kModelDim>(
         weights.embedder_input_embedding, 0,
         forward->final_norm_output.data() + pos * kModelDim,
-        activations.even_odd.data(),
+        forward->even_odd.data(),
         forward->logits.data() + pos * kVocabSize, pool);
   }
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
