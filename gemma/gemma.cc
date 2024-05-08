@@ -1853,7 +1853,6 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   const size_t ntokens = prompt.size() - 1;
   const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
   auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
-  float total_entropy = 0.0f;
 
   auto forward = hwy::MakeUniqueAligned<ForwardPass<TConfig>>();
   printf("forward activations size: %zu MB\n", sizeof(*forward) >> 20);
@@ -2021,16 +2020,25 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       AddFrom(activations.ffw_out.data() + pos * kModelDim,
               activations.x.data() + pos * kModelDim, kModelDim);
     }
+  }
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     RMSNormInplace(weights.final_norm_scale.data(),
                    activations.x.data() + pos * kModelDim,
                    kModelDim);
+  }
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     MatVec<kVocabSize, kModelDim>(
         weights.embedder_input_embedding, 0,
         activations.x.data() + pos * kModelDim,
         activations.even_odd.data(),
         activations.logits.data() + pos * kVocabSize, pool);
+  }
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     LogitsSoftCap(30.0f, activations.logits.data() + pos * kVocabSize,
                   kVocabSize);
+  }
+  float total_entropy = 0.0f;
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     Softmax(activations.logits.data() + pos * kVocabSize, kVocabSize);
     const int next_token = prompt[pos + 1];
     const float prob = activations.logits[pos * kVocabSize + next_token];
