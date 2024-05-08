@@ -1836,6 +1836,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                                      hwy::ThreadPool& pool) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kModelDim = TConfig::kModelDim;
+  const float kEmbScaling = EmbeddingScaling<TConfig>();
   const size_t ntokens = prompt.size();
   const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
   auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
@@ -1854,13 +1855,30 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   }
 #endif
 
+
   auto state = hwy::MakeUniqueAligned<Activations<TConfig, 1>>();
   auto kv_cache = CreateKVCacheT<TConfig>();
   auto& activations = *state;
   float total_entropy = 0.0f;
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    Transformer(prompt[pos], pos, weights, activations, kv_cache, pool,
-                /*layers_output=*/nullptr);
+    int token = prompt[pos];
+    Decompress(weights.embedder_input_embedding, token * kModelDim,
+               activations.x.data(), kModelDim);
+    MulByConst(kEmbScaling, activations.x.data(), kModelDim);
+    for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
+      const auto* layer_weights = weights.GetLayer(layer);
+      RMSNorm(activations.x.data(),
+              layer_weights->pre_attention_norm_scale.data(),
+              activations.pre_att_rms_out.data(), kModelDim);
+      Attention<1>(pos, 1, layer, activations, layer_weights, kv_cache, pool);
+      AddFrom(activations.att_post2.data(), activations.x.data(), kModelDim);
+      RMSNorm(activations.x.data(), layer_weights->pre_ffw_norm_scale.data(),
+              activations.bf_pre_ffw_rms_out.data(), kModelDim);
+      FFW<1>(activations, /* num_tokens = */ 1, layer_weights, pool);
+      AddFrom(activations.ffw_out.data(), activations.x.data(), kModelDim);
+    }
+    RMSNormInplace(weights.final_norm_scale.data(), activations.x.data(),
+                   kModelDim);
     MatVec<kVocabSize, kModelDim>(
         weights.embedder_input_embedding, 0, activations.x.data(),
         activations.even_odd.data(), activations.logits.data(), pool);
