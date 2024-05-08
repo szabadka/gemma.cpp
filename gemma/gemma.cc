@@ -1671,6 +1671,7 @@ struct ForwardLayer {
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   std::array<float, kSeqLen * kModelDim> input;
+  std::array<float, kSeqLen * kModelDim> attention_out;
 };
 
 template <typename TConfig>
@@ -1735,16 +1736,17 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   }
 #endif
 
-
   auto state = hwy::MakeUniqueAligned<Activations<TConfig, kSeqLen>>();
   auto kv_cache = CreateKVCacheT<TConfig>();
   auto& activations = *state;
-  memcpy(activations.x.data(), forward->layers[0].input.data(),
-         ntokens * kModelDim * sizeof(activations.x[0]));
   for (size_t layer = 0; layer < kLayers; ++layer) {
     const auto* layer_weights = weights.GetLayer(layer);
+    auto& layer_activations = forward->layers[layer];
+    float* HWY_RESTRICT output = layer + 1 < kLayers ?
+                                 forward->layers[layer + 1].input.data() :
+                                 forward->final_layer_output.data();
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-      RMSNorm(activations.x.data() + pos * kModelDim,
+      RMSNorm(layer_activations.input.data() + pos * kModelDim,
               layer_weights->pre_attention_norm_scale.data(),
               activations.pre_att_rms_out.data() + pos * kModelDim, kModelDim);
     }
@@ -1834,11 +1836,13 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       }
     }
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-      AddFrom(activations.att_post2.data() + pos * kModelDim,
-              activations.x.data() + pos * kModelDim, kModelDim);
+      Add(layer_activations.input.data() + pos * kModelDim,
+          activations.att_post2.data() + pos * kModelDim,
+          layer_activations.attention_out.data() + pos * kModelDim,
+          kModelDim);
     }
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-      RMSNorm(activations.x.data() + pos * kModelDim,
+      RMSNorm(layer_activations.attention_out.data() + pos * kModelDim,
               layer_weights->pre_ffw_norm_scale.data(),
               activations.bf_pre_ffw_rms_out.data() + pos * kModelDim,
               kModelDim);
@@ -1876,12 +1880,11 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
           activations.ffw_hidden.data() + hidden_offset,
           layer_weights->ffw_output_biases.data(), even_odd,
           activations.ffw_out.data() + pos * kModelDim, pool);
-      AddFrom(activations.ffw_out.data() + pos * kModelDim,
-              activations.x.data() + pos * kModelDim, kModelDim);
+      Add(layer_activations.attention_out.data() + pos * kModelDim,
+          activations.ffw_out.data() + pos * kModelDim,
+          output + pos * kModelDim, kModelDim);
     }
   }
-  memcpy(forward->final_layer_output.data(), activations.x.data(),
-         ntokens * kModelDim * sizeof(activations.x[0]));
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     RMSNorm(forward->final_layer_output.data() + pos * kModelDim,
             weights.final_norm_scale.data(),

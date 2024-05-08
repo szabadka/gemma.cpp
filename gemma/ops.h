@@ -787,6 +787,17 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(
                      HWY_ATTR { return hn::Add(x, other); });
 }
 
+static HWY_NOINLINE HWY_MAYBE_UNUSED void Add(
+    const float* HWY_RESTRICT a, const float* HWY_RESTRICT b,
+    float* HWY_RESTRICT out, const size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+  for (size_t i = 0; i < size; i += hn::Lanes(d)) {
+    hn::Store(hn::Add(hn::Load(d, a + i), hn::Load(d, b + i)), d, out + i);
+  }
+}
+
 static HWY_NOINLINE void MulBy(const float* HWY_RESTRICT other,
                                float* HWY_RESTRICT x, const size_t size,
                                const size_t max_pos) {
