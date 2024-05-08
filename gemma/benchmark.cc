@@ -191,15 +191,23 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     size_t num_tokens = std::min<size_t>(prompt.size() - pos, batch_tokens);
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
+#if 0
     auto kv_cache = CreateKVCache(model_type);
     float entropy =
         ComputeCrossEntropy(model, num_tokens, prompt_slice, kv_cache, pool,
                             app.verbosity);
+#else
+    gcpp::WeightStorageT grad = AllocateWeights(model_type, pool);
+    float entropy = CrossEntropyLossWithGradUpdate(prompt_slice, model_type,
+                                                   model.Weights(), grad, pool);
+#endif
+
     total_entropy += entropy;
     LogSpeedStats(time_start, pos + num_tokens);
     std::string text_slice;
     HWY_ASSERT(model.Tokenizer()->Decode(prompt_slice, &text_slice));
     total_input_len += text_slice.size();
+    printf("Total cross entropy: %f\n", total_entropy);
     printf("Cross entropy per byte: %f [cumulative: %f]\n",
            entropy / text_slice.size(), total_entropy / total_input_len);
   }

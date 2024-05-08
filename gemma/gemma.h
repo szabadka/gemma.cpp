@@ -51,6 +51,8 @@ struct KVCache {
       rglru_cache;  // kModelDim * kGriffinLayers
 };
 
+using WeightStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
+
 // Model variants: see configs.h for details.
 enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
@@ -85,6 +87,7 @@ struct Gemma {
         hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after the GemmaInterface dtor is defined.
   const GemmaTokenizer* Tokenizer() const;
+  const WeightStorageT& Weights() const;
   std::unique_ptr<GemmaInterface> impl_;
 };
 
@@ -120,8 +123,6 @@ void CompressWeights(gcpp::Model model, const Path& weights,
 float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);
-
-using WeightStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
 
 enum class InitMode { RAND_INIT, ZERO_INIT };
 

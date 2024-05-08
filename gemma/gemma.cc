@@ -448,6 +448,7 @@ struct GemmaInterface {
   virtual ~GemmaInterface() = default;
 
   virtual const GemmaTokenizer* Tokenizer() const = 0;
+  virtual const WeightStorageT& Weights() const = 0;
 
   virtual void Generate(size_t max_tokens, size_t max_generated_tokens,
                         float temperature, const std::vector<int>& prompt,
@@ -541,6 +542,7 @@ struct GemmaImpl : public GemmaInterface {
   }
 
   const GemmaTokenizer* Tokenizer() const override { return &tokenizer; }
+  const WeightStorageT& Weights() const override { return weights_u8; }
 
   void Generate(size_t max_tokens, size_t max_generated_tokens,
                 float temperature, const std::vector<int>& prompt,
@@ -559,10 +561,9 @@ struct GemmaImpl : public GemmaInterface {
   hwy::AlignedUniquePtr<Activations<Config, 1>> state;
 };
 
-template <class TConfig>
-std::string TokenString(GemmaImpl<TConfig>& gemma, int token) {
+std::string TokenString(const GemmaTokenizer* tokenizer, int token) {
   std::string token_str;
-  gemma.Tokenizer()->Decode({token}, &token_str);
+  tokenizer->Decode({token}, &token_str);
   return "'" + std::regex_replace(token_str, std::regex("\n"), "\\n") + "'";
 }
 
@@ -1175,11 +1176,10 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   }
 }
 
-#define TOKEN(token_id) TokenString(gemma, token_id).c_str()
+#define TOKEN(token_id) TokenString(tokenizer, token_id).c_str()
 
-template <class TConfig>
-void LogTopK(GemmaImpl<TConfig>& gemma, float* logits, float* dist, size_t len,
-             size_t k) {
+void LogTopK(const GemmaTokenizer* tokenizer, float* logits, float* dist,
+             size_t len, size_t k) {
   std::vector<std::pair<float, int>> sorted(len);
   for (size_t i = 0; i < len; ++i) {
     sorted[i] = std::make_pair(dist[i], static_cast<int>(i));
@@ -1199,20 +1199,23 @@ void LogTopK(GemmaImpl<TConfig>& gemma, float* logits, float* dist, size_t len,
 }
 
 template <class TConfig>
-float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
+float ComputeCrossEntropyImpl(const WeightStorageT& weights_u8,
+                              Activations<TConfig, 1>& activations,
+                              const GemmaTokenizer* tokenizer,
+                              size_t max_tokens,
                               const std::vector<int>& prompt, KVCache& kv_cache,
                               hwy::ThreadPool& pool, int verbosity) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  Activations<TConfig, 1>& activations = *gemma.state.get();
   const WeightsT<TConfig>& weights =
-      *reinterpret_cast<const WeightsT<TConfig>*>(gemma.weights_u8.get());
+      *reinterpret_cast<const WeightsT<TConfig>*>(weights_u8.get());
   std::vector<float> logits(kVocabSize);
   Softmax(activations.logits.data(), kVocabSize);
   float total_entropy = 0.0f;
   for (size_t pos = 0; pos < max_tokens && pos < prompt.size(); ++pos) {
-    if (verbosity >= 4) {
-      LogTopK(gemma, logits.data(), activations.logits.data(), kVocabSize, 10);
+    if (verbosity >= 4 && tokenizer) {
+      LogTopK(tokenizer, logits.data(), activations.logits.data(),
+              kVocabSize, 10);
     }
     const int token = prompt[pos];
     const float prob = activations.logits[token];
@@ -1236,6 +1239,17 @@ float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     Softmax(activations.logits.data(), kVocabSize);
   }
   return total_entropy / std::log(2.0);
+}
+
+template <class TConfig>
+float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
+                              const std::vector<int>& prompt, KVCache& kv_cache,
+                              hwy::ThreadPool& pool, int verbosity) {
+  return ComputeCrossEntropyImpl<TConfig>(gemma.weights_u8,
+                                          *gemma.state.get(),
+                                          gemma.Tokenizer(),
+                                          max_tokens, prompt, kv_cache, pool,
+                                          verbosity);
 }
 
 #undef TOKEN
@@ -1651,11 +1665,252 @@ void UpdateWeightsT(Model model, const WeightStorageT& grad, float scale,
 }
 
 template <typename TConfig>
+struct ForwardLayer {
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  std::array<float, kSeqLen * kModelDim> input;
+};
+
+template <typename TConfig>
+struct ForwardPass {
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  static constexpr size_t kVocabSize = TConfig::kVocabSize;
+  static constexpr size_t kLayers = TConfig::kLayers;
+
+  std::array<ForwardLayer<TConfig>, kLayers> layers;
+  std::array<float, kSeqLen * kModelDim> final_layer_output;
+};
+
+template <typename TConfig>
+void ApplyForwardLayer(const Layer<TConfig>& weights,
+                       size_t num_tokens,
+                       ForwardLayer<TConfig>& activations,
+                       float* HWY_RESTRICT output) {
+#if 0
+  auto type = TConfig::kLayerConfig[layer];
+  const auto* layer_weights = weights.GetLayer(layer);
+  size_t layer_of_type =
+      NumLayersOfTypeBefore(TConfig::kLayerConfig, type, layer);
+
+  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+    RMSNorm(activations.x.data() + token_idx * kModelDim,
+            layer_weights->pre_attention_norm_scale.data(),
+            activations.pre_att_rms_out.data() + token_idx * kModelDim,
+            kModelDim);
+  }
+
+  //HWY_NOINLINE void Attention(size_t batch_start, size_t num_tokens, size_t layer,
+  //Activations<TConfig, kBatchSize>& activations,
+  //                          const LayerT* layer_weights, KVCache& kv_cache,
+  //                          hwy::ThreadPool& pool) {
+  //Attention<kBatchSize>(pos, num_tokens, layer_of_type, activations,
+  //                      layer_weights, kv_cache, pool);
+
+  static constexpr size_t kQKVDim = gcpp::Activations<TConfig, 1>::kQKVDim;
+  static constexpr size_t kCachePosSize =
+      gcpp::Activations<TConfig, kBatchSize>::kCachePosSize;
+  static constexpr size_t kCacheLayerSize =
+      gcpp::Activations<TConfig, kBatchSize>::kCacheLayerSize;
+  static constexpr size_t kModelDim =
+      gcpp::Activations<TConfig, kBatchSize>::kModelDim;
+  static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kKVHeads = TConfig::kKVHeads;
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static const float kQueryScale =
+      static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
+
+  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
+    const size_t pos = batch_start + batch_idx;
+    float* x = activations.pre_att_rms_out.data() + batch_idx * kModelDim;
+
+    float* HWY_RESTRICT q =
+        activations.q.data() + batch_idx * kHeads * kQKVDim;
+    MatVec<kHeads * kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, 0, x,
+                                        activations.even_odd.data(), q, pool);
+
+    const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
+    const size_t kv_offset = cache_pos * kCachePosSize +
+                             layer * kCacheLayerSize;
+    float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
+    MatVec<kQKVDim * 2, kModelDim>(layer_weights->qkv_einsum_w,
+                                   kHeads * kQKVDim * kModelDim, x,
+                                   activations.even_odd.data(), kv, pool);
+    Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+  }
+  const size_t num_tasks = kHeads * num_tokens;
+  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+    //Attn(q + head * kQKVDim, head, 0, batch_idx, thread);
+    //auto Attn = [&](float* q, uint64_t head, size_t head_offset, size_t batch_idx,
+    //              size_t thread) HWY_ATTR {
+
+    const size_t head = task % kHeads;
+    const size_t batch_idx = task / kHeads;
+    float* HWY_RESTRICT q =
+        activations.q.data() + batch_idx * kHeads * kQKVDim;
+
+    const size_t pos = batch_start + batch_idx;
+    // Calculate scores
+    float* HWY_RESTRICT head_att = activations.att.data() +
+                                   head * kSeqLen +
+                                   batch_idx * kHeads * kSeqLen;
+
+    Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+    MulByConst(kQueryScale, q, kQKVDim);
+
+    // Compute Q dot K scores
+    const size_t start_pos = pos - std::min(kSeqLen - 1, pos);
+    for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+      const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
+      const size_t kv_offset = cache_pos * kCachePosSize +
+                               layer * kCacheLayerSize + head_offset;
+      const float* HWY_RESTRICT k2 = kv_cache.kv_cache.get() + kv_offset;
+      const float score = Dot(q, k2, kQKVDim);
+      head_att[pos2 % kSeqLen] = score;
+    }
+    Softmax(head_att, std::min(pos + 1, kSeqLen));
+
+    // Weighted summation
+    float* HWY_RESTRICT att_out = activations.att_out.data() + head * kQKVDim +
+                                  batch_idx * kHeads * kQKVDim;
+    hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
+    for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+      const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
+      const size_t kv_offset = cache_pos * kCachePosSize +
+                               layer * kCacheLayerSize + head_offset;
+      float* HWY_RESTRICT v2 = kv_cache.kv_cache.get() + kv_offset + kQKVDim;
+      MulByConstAndAdd(head_att[pos2 % kSeqLen], v2, att_out, kQKVDim);
+    }
+
+
+  });
+
+  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
+    // TODO(szabadka) Use a single MatVecAdd like in GriffinRecurrent() after
+    // rearranging the weights.
+    float* HWY_RESTRICT att_out =
+        activations.att_out.data() + batch_idx * kHeads * kQKVDim;
+    float* HWY_RESTRICT layer_out =
+        activations.att_post2.data() + batch_idx * kModelDim;
+    MatVecAdd<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
+        layer_weights->attn_vec_einsum_w, 0, att_out,
+        layer_weights->attention_output_biases.data(),
+        activations.even_odd.data(), layer_out, pool);
+    for (size_t head = 1; head < kHeads; ++head) {
+      float* HWY_RESTRICT head_out =
+          activations.att_post1.data() + head * kBatchSize * kModelDim;
+      MatVec<kModelDim, kQKVDim>(
+          layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
+          att_out + head * kQKVDim,
+          activations.even_odd.data(), head_out, pool);
+      AddFrom(head_out, layer_out, kModelDim);
+    }
+  }
+
+
+
+
+  pool.Run(0, num_tokens, [&](const uint64_t token_idx,
+                              size_t /*thread*/) HWY_ATTR {
+    AddFrom(activations.att_post2.data() + token_idx * kModelDim,
+            activations.x.data() + token_idx * kModelDim, kModelDim);
+    RMSNorm(activations.x.data() + token_idx * kModelDim,
+            layer_weights->pre_ffw_norm_scale.data(),
+            activations.bf_pre_ffw_rms_out.data() + token_idx * kModelDim,
+            kModelDim);
+  });
+  FFW<kBatchSize>(activations, num_tokens, layer_weights, pool);
+  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+    AddFrom(activations.ffw_out.data() + token_idx * kModelDim,
+            activations.x.data() + token_idx * kModelDim, kModelDim);
+  }
+#endif
+}
+
+template <typename TConfig>
 float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
-                                     const WeightStorageT& weights,
-                                     WeightStorageT& grad,
+                                     const WeightStorageT& weights_u8,
+                                     WeightStorageT& grad_u8,
                                      hwy::ThreadPool& pool) {
+  static constexpr size_t kVocabSize = TConfig::kVocabSize;
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  const size_t ntokens = prompt.size();
+  const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
+  auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
+
+#if 0
+  ForwardPass<TConfig> forward;
+  //ImputEmbedding(weights.embedder_input_embedding.data(), prompt,
+  //               forward.layers[0].input.data());
+
+  for (int layer = 0; layer < TConfig::kLayers; ++layer) {
+    float* HWY_RESTRICT output = layer + 1 < TConfig::kLayers ?
+                                 forward.layers[layer + 1].input.data() :
+                                 forward.final_layer_output.data();
+    ApplyForwardLayer(*weights.GetLayer(layer), ntokens, forward.layers[layer],
+                      output);
+  }
+#endif
+
+  auto state = hwy::MakeUniqueAligned<Activations<TConfig, 1>>();
+  auto kv_cache = CreateKVCacheT<TConfig>();
+  auto& activations = *state;
+  std::vector<float> logits(kVocabSize);
+  Softmax(activations.logits.data(), kVocabSize);
+  float total_entropy = 0.0f;
+  for (size_t pos = 0; pos < prompt.size(); ++pos) {
+    const int token = prompt[pos];
+    const float prob = activations.logits[token];
+    total_entropy -= std::max(std::log(prob), -64.0f);
+    Transformer(token, pos, weights, activations, kv_cache, pool,
+                /*layers_output=*/nullptr);
+    MatVec<kVocabSize, kModelDim>(
+        weights.embedder_input_embedding, 0, activations.x.data(),
+        activations.even_odd.data(), activations.logits.data(), pool);
+    LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
+    Softmax(activations.logits.data(), kVocabSize);
+  }
+  return total_entropy / std::log(2.0);
+
+#if 0
+  ApplyRMSNorm(weights.final_norm_scale.data(),
+               forward.final_layer_output.data(),
+               forward.final_norm_output.data());
+
+  ComputeLogits(weights.embedder_input_embedding.data(),
+                forward.final_norm_output.data(), forward.logits.data());
+
+  ApplySoftcap(forward.logits.data(), forward.softcap_logits.data());
+
+  float loss = ComputeCrossEntropyLoss(forward.softcap_logits.data());
+
+  std::vector<float> loss_grad(ntokens * kVocabSize);
+  LossGradient(forward.softcap_logits.data(), ntokens, kVocabSize,
+               loss_grad.data());
+
+  std::vector<float> softcap_grad(ntokens * kVocabSize);
+  SoftcapVJP(forward.logits.data(), loss_grad.data(), ntokens, kVocabSize,
+             softcap_grad.data());
+
+  std::vector<float> logits_grad(ntokens * kModelDim);
+  FinalLogitsVJP(weights, forward.final_norm_out.data(), softcap_grad.data(),
+                 ntokens, grad, logits_grad.data());
+
+  std::vector<float> final_norm_grad(ntokens * kModelDim);
+  RMSNormVJP(weights, forward.layers.back().output.data(), logits_grad.data(),
+             ntokens, grad, final_norm_grad.data());
+
+  std::vector<float> next_layer_grad = final_norm_grad;
+  std::vector<float> layer_grad(ntokens * kModelDim);
+  for (int layer = TConfig::kLayers - 1; layer >= 0; --layer) {
+    LayerVJP(layer, weights, forward.layers[layer], next_layer_grad.data(),
+             ntokens, grad, layer_grad.data());
+    next_layer_grad = layer_grad;
+  }
+
+  ImputEmbeddingVJP(weights, prompt, next_layer_grad.data(), grad);
   return 0.0f;
+#endif
 }
 
 float CrossEntropyLossWithGradUpdateT(const std::vector<int>& prompt,
@@ -1831,6 +2086,7 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 
 const GemmaTokenizer* Gemma::Tokenizer() const { return impl_->Tokenizer(); }
+const WeightStorageT& Gemma::Weights() const { return impl_->Weights(); }
 
 void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    float temperature, const std::vector<int>& prompt,
