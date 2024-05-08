@@ -1682,6 +1682,8 @@ struct ForwardPass {
 
   std::array<ForwardLayer<TConfig>, kLayers> layers;
   std::array<float, kSeqLen * kModelDim> final_layer_output;
+  std::array<float, kSeqLen * kModelDim> final_norm_output;
+  std::array<float, kSeqLen * kVocabSize> logits;
 };
 
 template <typename TConfig>
@@ -1689,144 +1691,6 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
                        size_t num_tokens,
                        ForwardLayer<TConfig>& activations,
                        float* HWY_RESTRICT output) {
-#if 0
-  auto type = TConfig::kLayerConfig[layer];
-  const auto* layer_weights = weights.GetLayer(layer);
-  size_t layer_of_type =
-      NumLayersOfTypeBefore(TConfig::kLayerConfig, type, layer);
-
-  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-    RMSNorm(activations.x.data() + token_idx * kModelDim,
-            layer_weights->pre_attention_norm_scale.data(),
-            activations.pre_att_rms_out.data() + token_idx * kModelDim,
-            kModelDim);
-  }
-
-  //HWY_NOINLINE void Attention(size_t batch_start, size_t num_tokens, size_t layer,
-  //Activations<TConfig, kBatchSize>& activations,
-  //                          const LayerT* layer_weights, KVCache& kv_cache,
-  //                          hwy::ThreadPool& pool) {
-  //Attention<kBatchSize>(pos, num_tokens, layer_of_type, activations,
-  //                      layer_weights, kv_cache, pool);
-
-  static constexpr size_t kQKVDim = gcpp::Activations<TConfig, 1>::kQKVDim;
-  static constexpr size_t kCachePosSize =
-      gcpp::Activations<TConfig, kBatchSize>::kCachePosSize;
-  static constexpr size_t kCacheLayerSize =
-      gcpp::Activations<TConfig, kBatchSize>::kCacheLayerSize;
-  static constexpr size_t kModelDim =
-      gcpp::Activations<TConfig, kBatchSize>::kModelDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kKVHeads = TConfig::kKVHeads;
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static const float kQueryScale =
-      static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
-
-  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-    const size_t pos = batch_start + batch_idx;
-    float* x = activations.pre_att_rms_out.data() + batch_idx * kModelDim;
-
-    float* HWY_RESTRICT q =
-        activations.q.data() + batch_idx * kHeads * kQKVDim;
-    MatVec<kHeads * kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, 0, x,
-                                        activations.even_odd.data(), q, pool);
-
-    const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
-    const size_t kv_offset = cache_pos * kCachePosSize +
-                             layer * kCacheLayerSize;
-    float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-    MatVec<kQKVDim * 2, kModelDim>(layer_weights->qkv_einsum_w,
-                                   kHeads * kQKVDim * kModelDim, x,
-                                   activations.even_odd.data(), kv, pool);
-    Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
-  }
-  const size_t num_tasks = kHeads * num_tokens;
-  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
-    //Attn(q + head * kQKVDim, head, 0, batch_idx, thread);
-    //auto Attn = [&](float* q, uint64_t head, size_t head_offset, size_t batch_idx,
-    //              size_t thread) HWY_ATTR {
-
-    const size_t head = task % kHeads;
-    const size_t batch_idx = task / kHeads;
-    float* HWY_RESTRICT q =
-        activations.q.data() + batch_idx * kHeads * kQKVDim;
-
-    const size_t pos = batch_start + batch_idx;
-    // Calculate scores
-    float* HWY_RESTRICT head_att = activations.att.data() +
-                                   head * kSeqLen +
-                                   batch_idx * kHeads * kSeqLen;
-
-    Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
-    MulByConst(kQueryScale, q, kQKVDim);
-
-    // Compute Q dot K scores
-    const size_t start_pos = pos - std::min(kSeqLen - 1, pos);
-    for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-      const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
-      const size_t kv_offset = cache_pos * kCachePosSize +
-                               layer * kCacheLayerSize + head_offset;
-      const float* HWY_RESTRICT k2 = kv_cache.kv_cache.get() + kv_offset;
-      const float score = Dot(q, k2, kQKVDim);
-      head_att[pos2 % kSeqLen] = score;
-    }
-    Softmax(head_att, std::min(pos + 1, kSeqLen));
-
-    // Weighted summation
-    float* HWY_RESTRICT att_out = activations.att_out.data() + head * kQKVDim +
-                                  batch_idx * kHeads * kQKVDim;
-    hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
-    for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-      const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
-      const size_t kv_offset = cache_pos * kCachePosSize +
-                               layer * kCacheLayerSize + head_offset;
-      float* HWY_RESTRICT v2 = kv_cache.kv_cache.get() + kv_offset + kQKVDim;
-      MulByConstAndAdd(head_att[pos2 % kSeqLen], v2, att_out, kQKVDim);
-    }
-
-
-  });
-
-  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-    // TODO(szabadka) Use a single MatVecAdd like in GriffinRecurrent() after
-    // rearranging the weights.
-    float* HWY_RESTRICT att_out =
-        activations.att_out.data() + batch_idx * kHeads * kQKVDim;
-    float* HWY_RESTRICT layer_out =
-        activations.att_post2.data() + batch_idx * kModelDim;
-    MatVecAdd<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
-        layer_weights->attn_vec_einsum_w, 0, att_out,
-        layer_weights->attention_output_biases.data(),
-        activations.even_odd.data(), layer_out, pool);
-    for (size_t head = 1; head < kHeads; ++head) {
-      float* HWY_RESTRICT head_out =
-          activations.att_post1.data() + head * kBatchSize * kModelDim;
-      MatVec<kModelDim, kQKVDim>(
-          layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
-          att_out + head * kQKVDim,
-          activations.even_odd.data(), head_out, pool);
-      AddFrom(head_out, layer_out, kModelDim);
-    }
-  }
-
-
-
-
-  pool.Run(0, num_tokens, [&](const uint64_t token_idx,
-                              size_t /*thread*/) HWY_ATTR {
-    AddFrom(activations.att_post2.data() + token_idx * kModelDim,
-            activations.x.data() + token_idx * kModelDim, kModelDim);
-    RMSNorm(activations.x.data() + token_idx * kModelDim,
-            layer_weights->pre_ffw_norm_scale.data(),
-            activations.bf_pre_ffw_rms_out.data() + token_idx * kModelDim,
-            kModelDim);
-  });
-  FFW<kBatchSize>(activations, num_tokens, layer_weights, pool);
-  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-    AddFrom(activations.ffw_out.data() + token_idx * kModelDim,
-            activations.x.data() + token_idx * kModelDim, kModelDim);
-  }
-#endif
 }
 
 
@@ -2021,27 +1885,30 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
               activations.x.data() + pos * kModelDim, kModelDim);
     }
   }
+  memcpy(forward->final_layer_output.data(), activations.x.data(),
+         ntokens * kModelDim * sizeof(activations.x[0]));
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    RMSNormInplace(weights.final_norm_scale.data(),
-                   activations.x.data() + pos * kModelDim,
-                   kModelDim);
+    RMSNorm(forward->final_layer_output.data() + pos * kModelDim,
+            weights.final_norm_scale.data(),
+            forward->final_norm_output.data() + pos * kModelDim,
+            kModelDim);
   }
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     MatVec<kVocabSize, kModelDim>(
         weights.embedder_input_embedding, 0,
-        activations.x.data() + pos * kModelDim,
+        forward->final_norm_output.data() + pos * kModelDim,
         activations.even_odd.data(),
-        activations.logits.data() + pos * kVocabSize, pool);
+        forward->logits.data() + pos * kVocabSize, pool);
   }
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    LogitsSoftCap(30.0f, activations.logits.data() + pos * kVocabSize,
+    LogitsSoftCap(30.0f, forward->logits.data() + pos * kVocabSize,
                   kVocabSize);
   }
   float total_entropy = 0.0f;
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    Softmax(activations.logits.data() + pos * kVocabSize, kVocabSize);
+    Softmax(forward->logits.data() + pos * kVocabSize, kVocabSize);
     const int next_token = prompt[pos + 1];
-    const float prob = activations.logits[pos * kVocabSize + next_token];
+    const float prob = forward->logits[pos * kVocabSize + next_token];
     total_entropy -= std::log(prob) / std::log(2.0);
   }
   return total_entropy;
