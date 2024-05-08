@@ -1760,25 +1760,23 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
           static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
       // Multi-Query Attention
-      for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-        float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
+      float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
 
-        float* HWY_RESTRICT q =
-            activations.q.data() + pos * kHeads * kQKVDim;
-        MatVec<kHeads * kQKVDim, kModelDim>(
-            layer_weights->qkv_einsum_w, 0, x,
-            activations.even_odd.data(), q, pool);
+      float* HWY_RESTRICT q = activations.q.data() + pos * kHeads * kQKVDim;
+      MatVec<kHeads * kQKVDim, kModelDim>(
+          layer_weights->qkv_einsum_w, 0, x,
+          activations.even_odd.data(), q, pool);
 
-        const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
-        const size_t kv_offset = cache_pos * kCachePosSize +
-                                 layer * kCacheLayerSize;
-        float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-        MatVec<kQKVDim * 2, kModelDim>(layer_weights->qkv_einsum_w,
-                                       kHeads * kQKVDim * kModelDim, x,
-                                       activations.even_odd.data(), kv, pool);
-        Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
-      }
-      const size_t num_tasks = kHeads * num_tokens;
+      const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
+      const size_t kv_offset = cache_pos * kCachePosSize +
+                               layer * kCacheLayerSize;
+      float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
+      MatVec<kQKVDim * 2, kModelDim>(layer_weights->qkv_einsum_w,
+                                     kHeads * kQKVDim * kModelDim, x,
+                                     activations.even_odd.data(), kv, pool);
+      Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+
+      const size_t num_tasks = kHeads;
       pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
         const size_t head = task % kHeads;
         float* HWY_RESTRICT q =
@@ -1818,23 +1816,21 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
         }
       });
 
-      for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-        float* HWY_RESTRICT att_out =
-            activations.att_out.data() + pos * kHeads * kQKVDim;
-        float* HWY_RESTRICT layer_out =
-            activations.att_post2.data() + pos * kModelDim;
+      float* HWY_RESTRICT att_out =
+          activations.att_out.data() + pos * kHeads * kQKVDim;
+      float* HWY_RESTRICT layer_out =
+          activations.att_post2.data() + pos * kModelDim;
+      MatVec<kModelDim, kQKVDim>(
+          layer_weights->attn_vec_einsum_w, 0, att_out,
+          activations.even_odd.data(), layer_out, pool);
+      for (size_t head = 1; head < kHeads; ++head) {
+        float* HWY_RESTRICT head_out =
+            activations.att_post1.data() + head * kBatchSize * kModelDim;
         MatVec<kModelDim, kQKVDim>(
-            layer_weights->attn_vec_einsum_w, 0, att_out,
-            activations.even_odd.data(), layer_out, pool);
-        for (size_t head = 1; head < kHeads; ++head) {
-          float* HWY_RESTRICT head_out =
-              activations.att_post1.data() + head * kBatchSize * kModelDim;
-          MatVec<kModelDim, kQKVDim>(
-              layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
-              att_out + head * kQKVDim,
-              activations.even_odd.data(), head_out, pool);
-          AddFrom(head_out, layer_out, kModelDim);
-        }
+            layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
+            att_out + head * kQKVDim,
+            activations.even_odd.data(), head_out, pool);
+        AddFrom(head_out, layer_out, kModelDim);
       }
 
       AddFrom(activations.att_post2.data() + pos * kModelDim,
@@ -1846,41 +1842,35 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
       float* HWY_RESTRICT even_odd = activations.even_odd.data();
 
-      for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-        const size_t hidden_offset = pos * kFFHiddenDim * 2;
-        PROFILER_ZONE("Gen.FFW.GatedGELU");
-        const hwy::bfloat16_t* HWY_RESTRICT vec =
-            activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
-        float* HWY_RESTRICT out = activations.ffw_hidden.data() + hidden_offset;
-        float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
-        // Same matrix, first and second half of rows. Could fuse into one
-        // MatVec.
-        MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
-            layer_weights->gating_einsum_w, kFFHiddenDim * kModelDim, vec,
-            layer_weights->ffw_gating_biases.data() + kFFHiddenDim, even_odd,
-            out_mul, pool);
-        // Gate, will go through the nonlinearity.
-        MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
-            layer_weights->gating_einsum_w, 0, vec,
-            layer_weights->ffw_gating_biases.data(), even_odd, out, pool);
+      const size_t hidden_offset = pos * kFFHiddenDim * 2;
+      PROFILER_ZONE("Gen.FFW.GatedGELU");
+      const hwy::bfloat16_t* HWY_RESTRICT vec =
+          activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
+      float* HWY_RESTRICT out = activations.ffw_hidden.data() + hidden_offset;
+      float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
 
-        namespace hn = hwy::HWY_NAMESPACE;
-        using DF = hn::ScalableTag<float>;
-        using VF = hn::Vec<DF>;
-        hn::Transform1(DF(), out, kFFHiddenDim, out_mul,
-                       [](DF df, VF v, VF mul)
-                       HWY_ATTR { return hn::Mul(mul, Gelu(df, v)); });
-      }
+      MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
+          layer_weights->gating_einsum_w, kFFHiddenDim * kModelDim, vec,
+          layer_weights->ffw_gating_biases.data() + kFFHiddenDim, even_odd,
+          out_mul, pool);
+      // Gate, will go through the nonlinearity.
+      MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
+          layer_weights->gating_einsum_w, 0, vec,
+          layer_weights->ffw_gating_biases.data(), even_odd, out, pool);
 
-      for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-        PROFILER_ZONE("Gen.FFW\\GatedGELU");
-        const size_t hidden_offset = pos * kFFHiddenDim * 2;
-        MatVecAdd<TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
-            layer_weights->linear_w, 0,
-            activations.ffw_hidden.data() + hidden_offset,
-            layer_weights->ffw_output_biases.data(), even_odd,
-            activations.ffw_out.data() + pos * kModelDim, pool);
-      }
+      namespace hn = hwy::HWY_NAMESPACE;
+      using DF = hn::ScalableTag<float>;
+      using VF = hn::Vec<DF>;
+      hn::Transform1(DF(), out, kFFHiddenDim, out_mul,
+                     [](DF df, VF v, VF mul)
+                     HWY_ATTR { return hn::Mul(mul, Gelu(df, v)); });
+
+      PROFILER_ZONE("Gen.FFW\\GatedGELU");
+      MatVecAdd<TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
+          layer_weights->linear_w, 0,
+          activations.ffw_hidden.data() + hidden_offset,
+          layer_weights->ffw_output_biases.data(), even_odd,
+          activations.ffw_out.data() + pos * kModelDim, pool);
       AddFrom(activations.ffw_out.data() + pos * kModelDim,
               activations.x.data() + pos * kModelDim, kModelDim);
     }
