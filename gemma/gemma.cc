@@ -1747,14 +1747,16 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       RMSNorm(activations.x.data() + pos * kModelDim,
               layer_weights->pre_attention_norm_scale.data(),
               activations.pre_att_rms_out.data() + pos * kModelDim, kModelDim);
-      // Multi-Query Attention
-      static constexpr size_t kQKVDim = TConfig::kQKVDim;
-      static constexpr size_t kHeads = TConfig::kHeads;
-      static constexpr size_t kCacheLayerSize = kQKVDim * 2;
-      static constexpr size_t kCachePosSize = kLayers * kCacheLayerSize;
-      static const float kQueryScale =
-          static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
+    }
+    // Multi-Query Attention
+    static constexpr size_t kQKVDim = TConfig::kQKVDim;
+    static constexpr size_t kHeads = TConfig::kHeads;
+    static constexpr size_t kCacheLayerSize = kQKVDim * 2;
+    static constexpr size_t kCachePosSize = kLayers * kCacheLayerSize;
+    static const float kQueryScale =
+        static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
+    for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
 
       float* HWY_RESTRICT q = activations.q.data() + pos * kHeads * kQKVDim;
@@ -1770,47 +1772,50 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                                      kHeads * kQKVDim * kModelDim, x,
                                      activations.even_odd.data(), kv, pool);
       Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+    }
 
-      const size_t num_tasks = kHeads;
-      pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
-        const size_t head = task % kHeads;
-        float* HWY_RESTRICT q =
-            activations.q.data() + (pos * kHeads + head) * kQKVDim;
-        // Calculate scores
-        float* HWY_RESTRICT head_att = activations.att.data() +
-                                       head * kSeqLen +
-                                       pos * kHeads * kSeqLen;
+    const size_t num_tasks = kHeads * ntokens;
+    pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+      const size_t head = task % kHeads;
+      const size_t pos = task / kHeads;
+      float* HWY_RESTRICT q =
+          activations.q.data() + (pos * kHeads + head) * kQKVDim;
+      // Calculate scores
+      float* HWY_RESTRICT head_att = activations.att.data() +
+                                     head * kSeqLen +
+                                     pos * kHeads * kSeqLen;
 
-        Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
-        MulByConst(kQueryScale, q, kQKVDim);
+      Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+      MulByConst(kQueryScale, q, kQKVDim);
 
-        // Compute Q dot K scores
-        const size_t start_pos = pos - std::min(kSeqLen - 1, pos);
-        for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-          const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
-          const size_t kv_offset = cache_pos * kCachePosSize +
-                                   layer * kCacheLayerSize;
-          const float* HWY_RESTRICT k2 = kv_cache.kv_cache.get() + kv_offset;
-          const float score = Dot(q, k2, kQKVDim);
-          head_att[pos2 % kSeqLen] = score;
-        }
-        Softmax(head_att, std::min(pos + 1, kSeqLen));
+      // Compute Q dot K scores
+      const size_t start_pos = pos - std::min(kSeqLen - 1, pos);
+      for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+        const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
+        const size_t kv_offset = cache_pos * kCachePosSize +
+                                 layer * kCacheLayerSize;
+        const float* HWY_RESTRICT k2 = kv_cache.kv_cache.get() + kv_offset;
+        const float score = Dot(q, k2, kQKVDim);
+        head_att[pos2 % kSeqLen] = score;
+      }
+      Softmax(head_att, std::min(pos + 1, kSeqLen));
 
-        // Weighted summation
-        float* HWY_RESTRICT att_out =
-            activations.att_out.data() + head * kQKVDim +
-            pos * kHeads * kQKVDim;
-        hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
-        for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-          const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
-          const size_t kv_offset = cache_pos * kCachePosSize +
-                                   layer * kCacheLayerSize;
-          float* HWY_RESTRICT v2 =
-              kv_cache.kv_cache.get() + kv_offset + kQKVDim;
-          MulByConstAndAdd(head_att[pos2 % kSeqLen], v2, att_out, kQKVDim);
-        }
-      });
+      // Weighted summation
+      float* HWY_RESTRICT att_out =
+          activations.att_out.data() + head * kQKVDim +
+          pos * kHeads * kQKVDim;
+      hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
+      for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+        const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
+        const size_t kv_offset = cache_pos * kCachePosSize +
+                                 layer * kCacheLayerSize;
+        float* HWY_RESTRICT v2 =
+                kv_cache.kv_cache.get() + kv_offset + kQKVDim;
+        MulByConstAndAdd(head_att[pos2 % kSeqLen], v2, att_out, kQKVDim);
+      }
+    });
 
+    for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       float* HWY_RESTRICT att_out =
           activations.att_out.data() + pos * kHeads * kQKVDim;
       float* HWY_RESTRICT layer_out =
