@@ -1832,13 +1832,18 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
             activations.even_odd.data(), head_out, pool);
         AddFrom(head_out, layer_out, kModelDim);
       }
-
+    }
+    for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       AddFrom(activations.att_post2.data() + pos * kModelDim,
               activations.x.data() + pos * kModelDim, kModelDim);
+    }
+    for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       RMSNorm(activations.x.data() + pos * kModelDim,
               layer_weights->pre_ffw_norm_scale.data(),
               activations.bf_pre_ffw_rms_out.data() + pos * kModelDim,
               kModelDim);
+    }
+    for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
       float* HWY_RESTRICT even_odd = activations.even_odd.data();
 
