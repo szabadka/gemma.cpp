@@ -1857,18 +1857,18 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
 #endif
 
 
-  auto state = hwy::MakeUniqueAligned<Activations<TConfig, 1>>();
+  auto state = hwy::MakeUniqueAligned<Activations<TConfig, kSeqLen>>();
   auto kv_cache = CreateKVCacheT<TConfig>();
   auto& activations = *state;
   float total_entropy = 0.0f;
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     int token = prompt[pos];
     Decompress(weights.embedder_input_embedding, token * kModelDim,
-               activations.x.data(), kModelDim);
-    MulByConst(kEmbScaling, activations.x.data(), kModelDim);
+               activations.x.data() + pos * kModelDim, kModelDim);
+    MulByConst(kEmbScaling, activations.x.data() + pos * kModelDim, kModelDim);
     for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
       const auto* layer_weights = weights.GetLayer(layer);
-      RMSNorm(activations.x.data(),
+      RMSNorm(activations.x.data() + pos * kModelDim,
               layer_weights->pre_attention_norm_scale.data(),
               activations.pre_att_rms_out.data(), kModelDim);
       size_t num_tokens = 1;
@@ -1965,8 +1965,10 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
         }
       }
 
-      AddFrom(activations.att_post2.data(), activations.x.data(), kModelDim);
-      RMSNorm(activations.x.data(), layer_weights->pre_ffw_norm_scale.data(),
+      AddFrom(activations.att_post2.data(),
+              activations.x.data() + pos * kModelDim, kModelDim);
+      RMSNorm(activations.x.data() + pos * kModelDim,
+              layer_weights->pre_ffw_norm_scale.data(),
               activations.bf_pre_ffw_rms_out.data(), kModelDim);
       static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
       float* HWY_RESTRICT even_odd = activations.even_odd.data();
@@ -2006,12 +2008,15 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
             layer_weights->ffw_output_biases.data(), even_odd,
             activations.ffw_out.data() + batch_idx * kModelDim, pool);
       }
-      AddFrom(activations.ffw_out.data(), activations.x.data(), kModelDim);
+      AddFrom(activations.ffw_out.data(),
+              activations.x.data() + pos * kModelDim, kModelDim);
     }
-    RMSNormInplace(weights.final_norm_scale.data(), activations.x.data(),
+    RMSNormInplace(weights.final_norm_scale.data(),
+                   activations.x.data() + pos * kModelDim,
                    kModelDim);
     MatVec<kVocabSize, kModelDim>(
-        weights.embedder_input_embedding, 0, activations.x.data(),
+        weights.embedder_input_embedding, 0,
+        activations.x.data() + pos * kModelDim,
         activations.even_odd.data(), activations.logits.data(), pool);
     LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
     Softmax(activations.logits.data(), kVocabSize);
