@@ -1713,6 +1713,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static constexpr size_t kLayers = TConfig::kLayers;
   const float kEmbScaling = EmbeddingScaling<TConfig>();
   const size_t ntokens = prompt.size() - 1;
   const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
@@ -1725,8 +1726,8 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                  forward->layers[0].input.data(), kModelDim);
 
 #if 0
-  for (int layer = 0; layer < TConfig::kLayers; ++layer) {
-    float* HWY_RESTRICT output = layer + 1 < TConfig::kLayers ?
+  for (size_t layer = 0; layer < kLayers; ++layer) {
+    float* HWY_RESTRICT output = layer + 1 < kLayers ?
                                  forward.layers[layer + 1].input.data() :
                                  forward.final_layer_output.data();
     ApplyForwardLayer(*weights.GetLayer(layer), ntokens, forward.layers[layer],
@@ -1740,26 +1741,20 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   auto& activations = *state;
   memcpy(activations.x.data(), forward->layers[0].input.data(),
          ntokens * kModelDim * sizeof(activations.x[0]));
-  for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
+  for (size_t layer = 0; layer < kLayers; ++layer) {
     const auto* layer_weights = weights.GetLayer(layer);
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       RMSNorm(activations.x.data() + pos * kModelDim,
               layer_weights->pre_attention_norm_scale.data(),
               activations.pre_att_rms_out.data() + pos * kModelDim, kModelDim);
-      size_t num_tokens = 1;
-      size_t batch_start = pos;
-      constexpr int kBatchSize = 1;
+      // Multi-Query Attention
       static constexpr size_t kQKVDim = TConfig::kQKVDim;
-      static constexpr size_t kCachePosSize =
-          gcpp::Activations<TConfig, kBatchSize>::kCachePosSize;
-      static constexpr size_t kCacheLayerSize =
-          gcpp::Activations<TConfig, kBatchSize>::kCacheLayerSize;
       static constexpr size_t kHeads = TConfig::kHeads;
-      static constexpr size_t kKVHeads = TConfig::kKVHeads;
+      static constexpr size_t kCacheLayerSize = kQKVDim * 2;
+      static constexpr size_t kCachePosSize = kLayers * kCacheLayerSize;
       static const float kQueryScale =
           static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
-      // Multi-Query Attention
       float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
 
       float* HWY_RESTRICT q = activations.q.data() + pos * kHeads * kQKVDim;
@@ -1825,7 +1820,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
           activations.even_odd.data(), layer_out, pool);
       for (size_t head = 1; head < kHeads; ++head) {
         float* HWY_RESTRICT head_out =
-            activations.att_post1.data() + head * kBatchSize * kModelDim;
+            activations.att_post1.data() + head * kSeqLen * kModelDim;
         MatVec<kModelDim, kQKVDim>(
             layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
             att_out + head * kQKVDim,
