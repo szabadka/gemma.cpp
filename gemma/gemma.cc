@@ -2027,11 +2027,13 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
     MatVec<kVocabSize, kModelDim>(
         weights.embedder_input_embedding, 0,
         activations.x.data() + pos * kModelDim,
-        activations.even_odd.data(), activations.logits.data(), pool);
-    LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
-    Softmax(activations.logits.data(), kVocabSize);
+        activations.even_odd.data(),
+        activations.logits.data() + pos * kVocabSize, pool);
+    LogitsSoftCap(30.0f, activations.logits.data() + pos * kVocabSize,
+                  kVocabSize);
+    Softmax(activations.logits.data() + pos * kVocabSize, kVocabSize);
     const int next_token = prompt[pos + 1];
-    const float prob = activations.logits[next_token];
+    const float prob = activations.logits[pos * kVocabSize + next_token];
     total_entropy -= std::log(prob) / std::log(2.0);
   }
   return total_entropy;
