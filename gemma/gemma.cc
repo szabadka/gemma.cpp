@@ -1740,9 +1740,9 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   auto& activations = *state;
   memcpy(activations.x.data(), forward->layers[0].input.data(),
          ntokens * kModelDim * sizeof(activations.x[0]));
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
-      const auto* layer_weights = weights.GetLayer(layer);
+  for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
+    const auto* layer_weights = weights.GetLayer(layer);
+    for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       RMSNorm(activations.x.data() + pos * kModelDim,
               layer_weights->pre_attention_norm_scale.data(),
               activations.pre_att_rms_out.data() + pos * kModelDim, kModelDim);
