@@ -1836,6 +1836,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                                      hwy::ThreadPool& pool) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kModelDim = TConfig::kModelDim;
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
   const float kEmbScaling = EmbeddingScaling<TConfig>();
   const size_t ntokens = prompt.size();
   const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
@@ -1870,7 +1871,105 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       RMSNorm(activations.x.data(),
               layer_weights->pre_attention_norm_scale.data(),
               activations.pre_att_rms_out.data(), kModelDim);
-      Attention<1>(pos, 1, layer, activations, layer_weights, kv_cache, pool);
+      size_t num_tokens = 1;
+      size_t batch_start = pos;
+      constexpr int kBatchSize = 1;
+      static constexpr size_t kQKVDim = TConfig::kQKVDim;
+      static constexpr size_t kCachePosSize =
+          gcpp::Activations<TConfig, kBatchSize>::kCachePosSize;
+      static constexpr size_t kCacheLayerSize =
+          gcpp::Activations<TConfig, kBatchSize>::kCacheLayerSize;
+      static constexpr size_t kHeads = TConfig::kHeads;
+      static constexpr size_t kKVHeads = TConfig::kKVHeads;
+      static const float kQueryScale =
+          static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
+
+      auto Attn = [&](float* q, uint64_t head, size_t head_offset, size_t batch_idx,
+                      size_t thread) HWY_ATTR {
+        const size_t pos = batch_start + batch_idx;
+        // Calculate scores
+        float* HWY_RESTRICT head_att = activations.att.data() +
+                                       head * kSeqLen +
+                                       batch_idx * kHeads * kSeqLen;
+
+        Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+        MulByConst(kQueryScale, q, kQKVDim);
+
+        // Compute Q dot K scores
+        const size_t start_pos = pos - std::min(kSeqLen - 1, pos);
+        for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+          const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
+          const size_t kv_offset = cache_pos * kCachePosSize +
+                                   layer * kCacheLayerSize + head_offset;
+          const float* HWY_RESTRICT k2 = kv_cache.kv_cache.get() + kv_offset;
+          const float score = Dot(q, k2, kQKVDim);
+          head_att[pos2 % kSeqLen] = score;
+        }
+        Softmax(head_att, std::min(pos + 1, kSeqLen));
+
+        // Weighted summation
+        float* HWY_RESTRICT att_out = activations.att_out.data() + head * kQKVDim +
+                                      batch_idx * kHeads * kQKVDim;
+        hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
+        for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+          const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
+          const size_t kv_offset = cache_pos * kCachePosSize +
+                                   layer * kCacheLayerSize + head_offset;
+          float* HWY_RESTRICT v2 = kv_cache.kv_cache.get() + kv_offset + kQKVDim;
+          MulByConstAndAdd(head_att[pos2 % kSeqLen], v2, att_out, kQKVDim);
+        }
+      };
+
+      // Multi-Query Attention
+      for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
+        const size_t pos = batch_start + batch_idx;
+        float* x = activations.pre_att_rms_out.data() + batch_idx * kModelDim;
+
+        float* HWY_RESTRICT q =
+            activations.q.data() + batch_idx * kHeads * kQKVDim;
+        MatVec<kHeads * kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, 0, x,
+                                            activations.even_odd.data(), q, pool);
+
+        const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
+        const size_t kv_offset = cache_pos * kCachePosSize +
+                                 layer * kCacheLayerSize;
+        float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
+        MatVec<kQKVDim * 2, kModelDim>(layer_weights->qkv_einsum_w,
+                                       kHeads * kQKVDim * kModelDim, x,
+                                       activations.even_odd.data(), kv, pool);
+        Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+      }
+      const size_t num_tasks = kHeads * num_tokens;
+      pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+        const size_t head = task % kHeads;
+        const size_t batch_idx = task / kHeads;
+        float* HWY_RESTRICT q =
+            activations.q.data() + batch_idx * kHeads * kQKVDim;
+        Attn(q + head * kQKVDim, head, 0, batch_idx, thread);
+      });
+
+      for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
+        // TODO(szabadka) Use a single MatVecAdd like in GriffinRecurrent() after
+        // rearranging the weights.
+        float* HWY_RESTRICT att_out =
+            activations.att_out.data() + batch_idx * kHeads * kQKVDim;
+        float* HWY_RESTRICT layer_out =
+            activations.att_post2.data() + batch_idx * kModelDim;
+        MatVecAdd<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
+            layer_weights->attn_vec_einsum_w, 0, att_out,
+            layer_weights->attention_output_biases.data(),
+            activations.even_odd.data(), layer_out, pool);
+        for (size_t head = 1; head < kHeads; ++head) {
+          float* HWY_RESTRICT head_out =
+              activations.att_post1.data() + head * kBatchSize * kModelDim;
+          MatVec<kModelDim, kQKVDim>(
+              layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
+              att_out + head * kQKVDim,
+              activations.even_odd.data(), head_out, pool);
+          AddFrom(head_out, layer_out, kModelDim);
+        }
+      }
+
       AddFrom(activations.att_post2.data(), activations.x.data(), kModelDim);
       RMSNorm(activations.x.data(), layer_weights->pre_ffw_norm_scale.data(),
               activations.bf_pre_ffw_rms_out.data(), kModelDim);
