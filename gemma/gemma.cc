@@ -1978,15 +1978,16 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
               activations.x.data() + pos * kModelDim, kModelDim);
       RMSNorm(activations.x.data() + pos * kModelDim,
               layer_weights->pre_ffw_norm_scale.data(),
-              activations.bf_pre_ffw_rms_out.data(), kModelDim);
+              activations.bf_pre_ffw_rms_out.data() + pos * kModelDim,
+              kModelDim);
       static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
       float* HWY_RESTRICT even_odd = activations.even_odd.data();
 
       for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-        const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
+        const size_t hidden_offset = pos * kFFHiddenDim * 2;
         PROFILER_ZONE("Gen.FFW.GatedGELU");
         const hwy::bfloat16_t* HWY_RESTRICT vec =
-            activations.bf_pre_ffw_rms_out.data() + batch_idx * kModelDim;
+            activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
         float* HWY_RESTRICT out = activations.ffw_hidden.data() + hidden_offset;
         float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
         // Same matrix, first and second half of rows. Could fuse into one
@@ -2010,14 +2011,14 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
 
       for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
         PROFILER_ZONE("Gen.FFW\\GatedGELU");
-        const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
+        const size_t hidden_offset = pos * kFFHiddenDim * 2;
         MatVecAdd<TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
             layer_weights->linear_w, 0,
             activations.ffw_hidden.data() + hidden_offset,
             layer_weights->ffw_output_biases.data(), even_odd,
-            activations.ffw_out.data() + batch_idx * kModelDim, pool);
+            activations.ffw_out.data() + pos * kModelDim, pool);
       }
-      AddFrom(activations.ffw_out.data(),
+      AddFrom(activations.ffw_out.data() + pos * kModelDim,
               activations.x.data() + pos * kModelDim, kModelDim);
     }
     RMSNormInplace(weights.final_norm_scale.data(),
