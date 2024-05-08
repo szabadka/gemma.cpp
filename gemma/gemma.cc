@@ -1829,6 +1829,18 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
 #endif
 }
 
+
+template <typename ArrayT>
+void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
+                    const float scaling, float* HWY_RESTRICT output,
+                    size_t model_dim) {
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+    int token = prompt[pos];
+    Decompress(weights, token * model_dim, output + pos * model_dim, model_dim);
+    MulByConst(scaling, output + pos * model_dim, model_dim);
+  }
+}
+
 template <typename TConfig>
 float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                                      const WeightStorageT& weights_u8,
@@ -1838,15 +1850,18 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   const float kEmbScaling = EmbeddingScaling<TConfig>();
-  const size_t ntokens = prompt.size();
+  const size_t ntokens = prompt.size() - 1;
   const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
   auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
+  float total_entropy = 0.0f;
+
+  auto forward = hwy::MakeUniqueAligned<ForwardPass<TConfig>>();
+  printf("forward activations size: %zu MB\n", sizeof(*forward) >> 20);
+
+  InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
+                 forward->layers[0].input.data(), kModelDim);
 
 #if 0
-  ForwardPass<TConfig> forward;
-  //ImputEmbedding(weights.embedder_input_embedding.data(), prompt,
-  //               forward.layers[0].input.data());
-
   for (int layer = 0; layer < TConfig::kLayers; ++layer) {
     float* HWY_RESTRICT output = layer + 1 < TConfig::kLayers ?
                                  forward.layers[layer + 1].input.data() :
@@ -1860,12 +1875,9 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   auto state = hwy::MakeUniqueAligned<Activations<TConfig, kSeqLen>>();
   auto kv_cache = CreateKVCacheT<TConfig>();
   auto& activations = *state;
-  float total_entropy = 0.0f;
+  memcpy(activations.x.data(), forward->layers[0].input.data(),
+         ntokens * kModelDim * sizeof(activations.x[0]));
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    int token = prompt[pos];
-    Decompress(weights.embedder_input_embedding, token * kModelDim,
-               activations.x.data() + pos * kModelDim, kModelDim);
-    MulByConst(kEmbScaling, activations.x.data() + pos * kModelDim, kModelDim);
     for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
       const auto* layer_weights = weights.GetLayer(layer);
       RMSNorm(activations.x.data() + pos * kModelDim,
