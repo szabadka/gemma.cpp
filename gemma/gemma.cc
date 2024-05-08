@@ -1223,7 +1223,9 @@ float ComputeCrossEntropyImpl(const WeightStorageT& weights_u8,
       printf("pos %4zu token %6d = %-12s  %.10e  %14.10f bits\n", pos, token,
              TOKEN(token), prob, -std::log(prob) / std::log(2.0));
     }
-    total_entropy -= std::max(std::log(prob), -64.0f);
+    if (pos > 0) {
+      total_entropy -= std::max(std::log(prob), -64.0f);
+    }
     if (verbosity >= 2 && pos % 100 == 99) {
       printf("Processed %zu tokens, cross-entropy per token: %f\n", pos + 1,
              total_entropy / std::log(2.0) / (pos + 1));
@@ -1855,22 +1857,20 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   auto state = hwy::MakeUniqueAligned<Activations<TConfig, 1>>();
   auto kv_cache = CreateKVCacheT<TConfig>();
   auto& activations = *state;
-  std::vector<float> logits(kVocabSize);
-  Softmax(activations.logits.data(), kVocabSize);
   float total_entropy = 0.0f;
-  for (size_t pos = 0; pos < prompt.size(); ++pos) {
-    const int token = prompt[pos];
-    const float prob = activations.logits[token];
-    total_entropy -= std::max(std::log(prob), -64.0f);
-    Transformer(token, pos, weights, activations, kv_cache, pool,
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+    Transformer(prompt[pos], pos, weights, activations, kv_cache, pool,
                 /*layers_output=*/nullptr);
     MatVec<kVocabSize, kModelDim>(
         weights.embedder_input_embedding, 0, activations.x.data(),
         activations.even_odd.data(), activations.logits.data(), pool);
     LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
     Softmax(activations.logits.data(), kVocabSize);
+    const int next_token = prompt[pos + 1];
+    const float prob = activations.logits[next_token];
+    total_entropy -= std::log(prob) / std::log(2.0);
   }
-  return total_entropy / std::log(2.0);
+  return total_entropy;
 
 #if 0
   ApplyRMSNorm(weights.final_norm_scale.data(),
