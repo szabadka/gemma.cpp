@@ -1874,9 +1874,13 @@ void ApplySoftcap(const float* HWY_RESTRICT x, float* HWY_RESTRICT output,
 template<size_t kVocabSize>
 float CrossEntropyLoss(const float* HWY_RESTRICT x,
                        const std::vector<int>& prompt,
+                       size_t context_size,
                        hwy::ThreadPool& pool) {
   float loss = 0.0f;
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+    if (pos + 1 < context_size) {
+      continue;  // next token is part of context, don't try to predict it
+    }
     const int next_token = prompt[pos + 1];
     loss += SoftmaxCrossEntropy(x + pos * kVocabSize, kVocabSize, next_token);
   }
@@ -1885,6 +1889,7 @@ float CrossEntropyLoss(const float* HWY_RESTRICT x,
 
 template <typename TConfig>
 float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
+                                     size_t context_size,
                                      const WeightStorageT& weights_u8,
                                      WeightStorageT& grad_u8,
                                      hwy::ThreadPool& pool) {
@@ -1893,9 +1898,12 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kLayers = TConfig::kLayers;
   const float kEmbScaling = EmbeddingScaling<TConfig>();
-  const size_t num_tokens = prompt.size() - 1;
   const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
   auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
+
+  HWY_DASSERT(context_size > 0);
+  HWY_DASSERT(context_size < prompt.size());
+  const size_t num_tokens = prompt.size() - 1;
 
   auto forward = hwy::MakeUniqueAligned<ForwardPass<TConfig>>();
   printf("forward activations size: %zu MB\n", sizeof(*forward) >> 20);
@@ -1923,7 +1931,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                num_tokens, kVocabSize, pool);
 
   float loss = CrossEntropyLoss<kVocabSize>(forward->logits.data(), prompt,
-                                            pool);
+                                            context_size, pool);
   return loss;
 
 #if 0
@@ -1957,6 +1965,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
 }
 
 float CrossEntropyLossWithGradUpdateT(const std::vector<int>& prompt,
+                                      size_t context_size,
                                       Model model,
                                       const WeightStorageT& weights,
                                       WeightStorageT& grad,
@@ -1964,16 +1973,16 @@ float CrossEntropyLossWithGradUpdateT(const std::vector<int>& prompt,
   switch (model) {
     case Model::GEMMA_2B:
       return CrossEntropyLossWithGradUpdate<ConfigGemma2B>(
-          prompt, weights, grad, pool);
+          prompt, context_size, weights, grad, pool);
     case Model::GEMMA_7B:
       return CrossEntropyLossWithGradUpdate<ConfigGemma7B>(
-          prompt, weights, grad, pool);
+          prompt, context_size, weights, grad, pool);
     case Model::GRIFFIN_2B:
       return CrossEntropyLossWithGradUpdate<ConfigGriffin2B>(
-          prompt, weights, grad, pool);
+          prompt, context_size, weights, grad, pool);
     case Model::GEMMA_TINY:
       return CrossEntropyLossWithGradUpdate<ConfigGemmaTiny>(
-          prompt, weights, grad, pool);
+          prompt, context_size, weights, grad, pool);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -2191,11 +2200,11 @@ void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
 }
 
 float CrossEntropyLossWithGradUpdate(
-    const std::vector<int>& prompt, const Model& model,
+    const std::vector<int>& prompt, size_t context_size, const Model& model,
     const WeightStorageT& weights, WeightStorageT& grad,
     hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(CrossEntropyLossWithGradUpdateT)(
-      prompt, model, weights, grad, pool);
+      prompt, context_size, model, weights, grad, pool);
 }
 
 namespace {

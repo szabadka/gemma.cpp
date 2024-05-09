@@ -138,7 +138,7 @@ void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
                    WeightStorageT& weights, hwy::ThreadPool& pool);
 
 float CrossEntropyLossWithGradUpdate(
-    const std::vector<int>& prompt, const Model& model,
+    const std::vector<int>& prompt, size_t context_size, const Model& model,
     const WeightStorageT& weights, WeightStorageT& grad,
     hwy::ThreadPool& pool);
 

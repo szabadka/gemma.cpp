@@ -198,7 +198,7 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
                             app.verbosity);
 #else
     gcpp::WeightStorageT grad = AllocateWeights(model_type, pool);
-    float entropy = CrossEntropyLossWithGradUpdate(prompt_slice, model_type,
+    float entropy = CrossEntropyLossWithGradUpdate(prompt_slice, 1, model_type,
                                                    model.Weights(), grad, pool);
 #endif
 

@@ -82,22 +82,22 @@ static constexpr int kEndToken = 12;
 
 class PromptSampler {
  public:
-  virtual std::vector<int> Sample(std::mt19937& gen) = 0;
+  virtual size_t Sample(std::mt19937& gen, std::vector<int>& sample) = 0;
 };
 
 class ReverseSequenceSampler : public PromptSampler {
  public:
   explicit ReverseSequenceSampler(size_t len) : dist_(0, 9), len_(len) {}
 
-  std::vector<int> Sample(std::mt19937& gen) override {
-    std::vector<int> sample(2 * len_ + 3);
+  size_t Sample(std::mt19937& gen, std::vector<int>& sample) override {
+    sample.resize(2 * len_ + 3);
     sample[0] = kStartToken;
     sample[len_ + 1] = kReverseToken;
     sample[2 * len_ + 2] = kEndToken;
     for (size_t i = 0; i < len_; ++i) {
       sample[i + 1] = sample[2 * len_ + 1 - i] = dist_(gen);
     }
-    return sample;
+    return len_ + 2;
   }
 
  private:
@@ -133,10 +133,11 @@ void Run(Args& args) {
     InitWeights(args.model_type, grad, InitMode::ZERO_INIT, pool);
     float total_loss = 0.0f;
     for (size_t i = 0; i < kBatchSize; ++i) {
-      std::vector<int> prompt = training_task.Sample(gen);
+      std::vector<int> prompt;
+      size_t context_size = training_task.Sample(gen, prompt);
       LogPrompt(prompt);
       total_loss += CrossEntropyLossWithGradUpdate(
-          prompt, args.model_type, weights, grad, pool);
+          prompt, context_size, args.model_type, weights, grad, pool);
     }
     total_loss /= kBatchSize;
 
