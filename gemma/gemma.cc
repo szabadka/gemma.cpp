@@ -1676,6 +1676,7 @@ struct ForwardLayer {
   std::array<float, kSeqLen * kModelDim> input;
   std::array<float, kSeqLen * kModelDim> pre_att_rms_out;
   std::array<float, kSeqLen * kHeads * kQKVDim> q;
+  std::array<float, kSeqLen * kHeads * kQKVDim * 2> kv;
   std::array<float, kSeqLen * kHeads * kSeqLen> att;
   std::array<float, kSeqLen * kHeads * kQKVDim> att_out;
   std::array<float, kSeqLen * kHeads * kModelDim> att_post1;
@@ -1750,7 +1751,6 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   }
 #endif
 
-  auto kv_cache = CreateKVCacheT<TConfig>();
   for (size_t layer = 0; layer < kLayers; ++layer) {
     const auto* layer_weights = weights.GetLayer(layer);
     auto& layer_activations = forward->layers[layer];
@@ -1780,10 +1780,8 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
           layer_weights->qkv_einsum_w, 0, x,
           forward->even_odd.data(), q, pool);
 
-      const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
-      const size_t kv_offset = cache_pos * kCachePosSize +
-                               layer * kCacheLayerSize;
-      float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
+      float* HWY_RESTRICT kv =
+          layer_activations.kv.data() + pos * kHeads * kQKVDim * 2;
       MatVec<kQKVDim * 2, kModelDim>(layer_weights->qkv_einsum_w,
                                      kHeads * kQKVDim * kModelDim, x,
                                      forward->even_odd.data(), kv, pool);
@@ -1805,12 +1803,9 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       MulByConst(kQueryScale, q, kQKVDim);
 
       // Compute Q dot K scores
-      const size_t start_pos = pos - std::min(kSeqLen - 1, pos);
-      for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-        const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
-        const size_t kv_offset = cache_pos * kCachePosSize +
-                                 layer * kCacheLayerSize;
-        const float* HWY_RESTRICT k2 = kv_cache.kv_cache.get() + kv_offset;
+      for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
+        float* HWY_RESTRICT k2 =
+          layer_activations.kv.data() + pos2 * kHeads * kQKVDim * 2;
         const float score = Dot(q, k2, kQKVDim);
         head_att[pos2 % kSeqLen] = score;
       }
@@ -1821,12 +1816,9 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
           layer_activations.att_out.data() + head * kQKVDim +
           pos * kHeads * kQKVDim;
       hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
-      for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-        const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
-        const size_t kv_offset = cache_pos * kCachePosSize +
-                                 layer * kCacheLayerSize;
+      for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
         float* HWY_RESTRICT v2 =
-                kv_cache.kv_cache.get() + kv_offset + kQKVDim;
+            layer_activations.kv.data() + pos2 * kHeads * kQKVDim * 2 + kQKVDim;
         MulByConstAndAdd(head_att[pos2 % kSeqLen], v2, att_out, kQKVDim);
       }
     });
