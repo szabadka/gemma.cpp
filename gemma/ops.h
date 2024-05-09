@@ -150,14 +150,15 @@ HWY_INLINE void MatVecAddLoop(const ArrayT& mat, const size_t mat_ofs,
                               float* HWY_RESTRICT out) {
   PROFILER_ZONE("MatVecAddLoop");
   const hn::ScalableTag<float> df;
+  constexpr bool kVecEO = false;
 
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs = mat_ofs + idx_row * kInner;
     if constexpr (kAdd) {
       out[idx_row] = hwy::ConvertScalarTo<float>(add[idx_row]) +
-                     Dot(df, mat, row_ofs, vec_aligned, kInner);
+                     Dot<kVecEO>(df, mat, row_ofs, vec_aligned, kInner);
     } else {
-      out[idx_row] = Dot(df, mat, row_ofs, vec_aligned, kInner);
+      out[idx_row] = Dot<kVecEO>(df, mat, row_ofs, vec_aligned, kInner);
     }
   }
 }
@@ -210,18 +211,19 @@ HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
                                     float* HWY_RESTRICT out1) {
   PROFILER_ZONE("MatVecLoop");
   const hn::ScalableTag<float> df;
+  constexpr bool kVecEO = false;
 
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs0 = mat_ofs0 + (idx_row)*kInner;
     const size_t row_ofs1 = mat_ofs1 + (idx_row)*kInner;
     if constexpr (kAdd) {
       out0[idx_row] = hwy::ConvertScalarTo<float>(add0[idx_row]) +
-                      Dot(df, mat, row_ofs0, vec_aligned, kInner);
+                      Dot<kVecEO>(df, mat, row_ofs0, vec_aligned, kInner);
       out1[idx_row] = hwy::ConvertScalarTo<float>(add1[idx_row]) +
-                      Dot(df, mat, row_ofs1, vec_aligned, kInner);
+                      Dot<kVecEO>(df, mat, row_ofs1, vec_aligned, kInner);
     } else {
-      out0[idx_row] = Dot(df, mat, row_ofs0, vec_aligned, kInner);
-      out1[idx_row] = Dot(df, mat, row_ofs1, vec_aligned, kInner);
+      out0[idx_row] = Dot<kVecEO>(df, mat, row_ofs0, vec_aligned, kInner);
+      out1[idx_row] = Dot<kVecEO>(df, mat, row_ofs1, vec_aligned, kInner);
     }
   }
 }

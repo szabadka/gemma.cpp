@@ -465,14 +465,13 @@ HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
 }
 
 // Returns dot product with `vec_aligned` of length `num`.
-template <class DF, typename ArrayT, typename VecT>
-HWY_INLINE float Dot(DF df, const ArrayT& compressed, size_t compressed_ofs,
-                     const VecT* vec_aligned, size_t num) {
-  HWY_DASSERT(compressed_ofs + num <= compressed.size());
-  HWY_DASSERT(hn::IsAligned(df, vec_aligned));
-  using Traits = CompressTraits<typename ArrayT::value_type>;
-  return Traits::Dot(df, compressed.size(), compressed.data(), compressed_ofs,
-                     vec_aligned, num);
+template <bool kVecEO, class DF, size_t kCapacity, typename VecT>
+HWY_INLINE float Dot(DF df, const std::array<float, kCapacity>& w, size_t ofs,
+                     const VecT* x, size_t num) {
+  HWY_DASSERT(ofs + num <= kCapacity);
+  HWY_DASSERT(hn::IsAligned(df, x));
+  using Traits = CompressTraits<float>;
+  return Traits::Dot(df, w.size(), w.data(), ofs, x, num);
 }
 
 // Returns dot product with `vec_aligned` of length `num`.

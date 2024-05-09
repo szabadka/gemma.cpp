@@ -1682,7 +1682,7 @@ struct ForwardLayer {
   std::array<float, kSeqLen * kHeads * kModelDim> att_post1;
   std::array<float, kSeqLen * kModelDim> att_post2;
   std::array<float, kSeqLen * kModelDim> attention_out;
-  std::array<hwy::bfloat16_t, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
+  std::array<float, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
   std::array<float, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
   std::array<float, kSeqLen * kModelDim> ffw_out;
 };
@@ -1728,7 +1728,7 @@ void ApplyRMSNorm(const WT* HWY_RESTRICT weights, const XT* HWY_RESTRICT x,
 }
 
 template <typename TConfig>
-void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
+void ApplyForwardLayer(const Layer<TConfig>& weights,
                        ForwardLayer<TConfig>& activations,
                        size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
@@ -1820,7 +1820,7 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
-    const hwy::bfloat16_t* HWY_RESTRICT vec =
+    const float* HWY_RESTRICT vec =
         activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
     float* HWY_RESTRICT out =
         activations.ffw_hidden.data() + hidden_offset;
@@ -1898,7 +1898,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kLayers = TConfig::kLayers;
   const float kEmbScaling = EmbeddingScaling<TConfig>();
-  const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
+  const auto& weights = *reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
   auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
 
   HWY_DASSERT(context_size > 0);
