@@ -179,6 +179,45 @@ struct Weights {
 };
 
 template <typename TConfig>
+struct ForwardLayer {
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  static constexpr size_t kQKVDim = TConfig::kQKVDim;
+  static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+  std::array<float, kSeqLen * kModelDim> input;
+  std::array<float, kSeqLen * kModelDim> pre_att_rms_out;
+  std::array<float, kSeqLen * kHeads * kQKVDim> q;
+  std::array<float, kSeqLen * kHeads * kQKVDim * 2> kv;
+  std::array<float, kSeqLen * kHeads * kSeqLen> att;
+  std::array<float, kSeqLen * kHeads * kQKVDim> att_out;
+  std::array<float, kSeqLen * kHeads * kModelDim> att_post1;
+  std::array<float, kSeqLen * kModelDim> att_post2;
+  std::array<float, kSeqLen * kModelDim> attention_out;
+  std::array<float, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
+  std::array<float, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
+  std::array<float, kSeqLen * kModelDim> ffw_out;
+};
+
+template <typename TConfig>
+struct ForwardPass {
+  ForwardPass() {}  // prevents placement-new calling memset
+
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  static constexpr size_t kVocabSize = TConfig::kVocabSize;
+  static constexpr size_t kLayers = TConfig::kLayers;
+
+  std::array<ForwardLayer<TConfig>, kLayers> layers;
+  std::array<float, kSeqLen * kModelDim> final_layer_output;
+  std::array<float, kSeqLen * kModelDim> final_norm_output;
+  std::array<float, kSeqLen * kVocabSize> raw_logits;
+  std::array<float, kSeqLen * kVocabSize> logits;
+
+  std::array<float, kModelDim * kMaxThreads> even_odd;
+};
+
+template <typename TConfig>
 WeightStorageT AllocateWeights(hwy::ThreadPool& pool) {
   using TWeights = Weights<TConfig>;
   hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
@@ -186,6 +225,15 @@ WeightStorageT AllocateWeights(hwy::ThreadPool& pool) {
   TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
   new (&weights->layer_ptrs) LayerPointers<TConfig>(pool);
   return weights_u8;
+}
+
+template <typename TConfig>
+WeightStorageT AllocateForwardPass() {
+  using TForward = ForwardPass<TConfig>;
+  hwy::AlignedFreeUniquePtr<uint8_t[]> forward_u8 =
+      hwy::AllocateAligned<uint8_t>(sizeof(TForward));
+  TForward* forward = reinterpret_cast<TForward*>(forward_u8.get());
+  return forward_u8;
 }
 
 template <typename TConfig>
@@ -1466,6 +1514,17 @@ WeightStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
   }
 }
 
+WeightStorageT AllocateForwardPassT(gcpp::Model model) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return AllocateForwardPass<ConfigGemma2B>();
+    case Model::GEMMA_TINY:
+      return AllocateForwardPass<ConfigGemmaTiny>();
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 template <class TConfig>
 void CompressWeights(const Path& weights_path,
                      const Path& compressed_weights_path,
@@ -1666,45 +1725,6 @@ void UpdateWeightsT(Model model, const WeightStorageT& grad, float scale,
   }
 }
 
-template <typename TConfig>
-struct ForwardLayer {
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-  std::array<float, kSeqLen * kModelDim> input;
-  std::array<float, kSeqLen * kModelDim> pre_att_rms_out;
-  std::array<float, kSeqLen * kHeads * kQKVDim> q;
-  std::array<float, kSeqLen * kHeads * kQKVDim * 2> kv;
-  std::array<float, kSeqLen * kHeads * kSeqLen> att;
-  std::array<float, kSeqLen * kHeads * kQKVDim> att_out;
-  std::array<float, kSeqLen * kHeads * kModelDim> att_post1;
-  std::array<float, kSeqLen * kModelDim> att_post2;
-  std::array<float, kSeqLen * kModelDim> attention_out;
-  std::array<float, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
-  std::array<float, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
-  std::array<float, kSeqLen * kModelDim> ffw_out;
-};
-
-template <typename TConfig>
-struct ForwardPass {
-  ForwardPass() {}  // prevents placement-new calling memset
-
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kLayers = TConfig::kLayers;
-
-  std::array<ForwardLayer<TConfig>, kLayers> layers;
-  std::array<float, kSeqLen * kModelDim> final_layer_output;
-  std::array<float, kSeqLen * kModelDim> final_norm_output;
-  std::array<float, kSeqLen * kVocabSize> raw_logits;
-  std::array<float, kSeqLen * kVocabSize> logits;
-
-  std::array<float, kModelDim * kMaxThreads> even_odd;
-};
-
 template <typename ArrayT>
 void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
                     const float scaling, float* HWY_RESTRICT output,
@@ -1891,6 +1911,7 @@ template <typename TConfig>
 float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                                      size_t context_size,
                                      const WeightStorageT& weights_u8,
+                                     WeightStorageT& forward_u8,
                                      WeightStorageT& grad_u8,
                                      hwy::ThreadPool& pool) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
@@ -1905,8 +1926,9 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   HWY_DASSERT(context_size < prompt.size());
   const size_t num_tokens = prompt.size() - 1;
 
-  auto forward = hwy::MakeUniqueAligned<ForwardPass<TConfig>>();
-  printf("forward activations size: %zu MB\n", sizeof(*forward) >> 20);
+  //auto forward = hwy::MakeUniqueAligned<ForwardPass<TConfig>>();
+  ForwardPass<TConfig>* forward =
+      reinterpret_cast<ForwardPass<TConfig>*>(forward_u8.get());
 
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
                  forward->layers[0].input.data(), kModelDim);
@@ -1968,21 +1990,16 @@ float CrossEntropyLossWithGradUpdateT(const std::vector<int>& prompt,
                                       size_t context_size,
                                       Model model,
                                       const WeightStorageT& weights,
+                                      WeightStorageT& forward,
                                       WeightStorageT& grad,
                                       hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
       return CrossEntropyLossWithGradUpdate<ConfigGemma2B>(
-          prompt, context_size, weights, grad, pool);
-    case Model::GEMMA_7B:
-      return CrossEntropyLossWithGradUpdate<ConfigGemma7B>(
-          prompt, context_size, weights, grad, pool);
-    case Model::GRIFFIN_2B:
-      return CrossEntropyLossWithGradUpdate<ConfigGriffin2B>(
-          prompt, context_size, weights, grad, pool);
+          prompt, context_size, weights, forward, grad, pool);
     case Model::GEMMA_TINY:
       return CrossEntropyLossWithGradUpdate<ConfigGemmaTiny>(
-          prompt, context_size, weights, grad, pool);
+          prompt, context_size, weights, forward, grad, pool);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -1996,6 +2013,7 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 
 HWY_EXPORT(AllocateWeightsT);
+HWY_EXPORT(AllocateForwardPassT);
 HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(UpdateWeightsT);
@@ -2184,6 +2202,10 @@ WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(AllocateWeightsT)(model, pool);
 }
 
+WeightStorageT AllocateForwardPass(Model model) {
+  return HWY_DYNAMIC_DISPATCH(AllocateForwardPassT)(model);
+}
+
 void LogWeightStats(Model model, const WeightStorageT& weights) {
   return HWY_DYNAMIC_DISPATCH(LogWeightStatsT)(model, weights);
 }
@@ -2201,10 +2223,10 @@ void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
 
 float CrossEntropyLossWithGradUpdate(
     const std::vector<int>& prompt, size_t context_size, const Model& model,
-    const WeightStorageT& weights, WeightStorageT& grad,
-    hwy::ThreadPool& pool) {
+    const WeightStorageT& weights, WeightStorageT& forward,
+    WeightStorageT& grad, hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(CrossEntropyLossWithGradUpdateT)(
-      prompt, context_size, model, weights, grad, pool);
+      prompt, context_size, model, weights, forward, grad, pool);
 }
 
 namespace {

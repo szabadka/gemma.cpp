@@ -143,8 +143,8 @@ struct ConfigGemma2B {
 struct ConfigGemmaTiny {
   static constexpr int kSeqLen = 256;
   static constexpr int kVocabSize = 16;
-  static constexpr std::array<LayerAttentionType, 2> kLayerConfig =
-      FixedLayerConfig<2>(LayerAttentionType::kGemma);
+  static constexpr std::array<LayerAttentionType, 1> kLayerConfig =
+      FixedLayerConfig<1>(LayerAttentionType::kGemma);
   static constexpr int kLayers = kLayerConfig.size();
   static constexpr int kGemmaLayers =
       NumLayersOfTypeBefore(kLayerConfig, LayerAttentionType::kGemma, kLayers);

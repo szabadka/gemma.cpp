@@ -119,6 +119,7 @@ void Run(Args& args) {
 
   WeightStorageT weights = AllocateWeights(args.model_type, pool);
   WeightStorageT grad = AllocateWeights(args.model_type, pool);
+  WeightStorageT forward = AllocateForwardPass(args.model_type);
 
   InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
 
@@ -137,7 +138,7 @@ void Run(Args& args) {
       size_t context_size = training_task.Sample(gen, prompt);
       LogPrompt(prompt);
       total_loss += CrossEntropyLossWithGradUpdate(
-          prompt, context_size, args.model_type, weights, grad, pool);
+          prompt, context_size, args.model_type, weights, forward, grad, pool);
     }
     total_loss /= kBatchSize;
 

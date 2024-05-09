@@ -127,6 +127,7 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
 enum class InitMode { RAND_INIT, ZERO_INIT };
 
 WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
+WeightStorageT AllocateForwardPass(Model model);
 
 void LogWeightStats(Model model, const WeightStorageT& weights);
 
@@ -139,8 +140,8 @@ void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
 
 float CrossEntropyLossWithGradUpdate(
     const std::vector<int>& prompt, size_t context_size, const Model& model,
-    const WeightStorageT& weights, WeightStorageT& grad,
-    hwy::ThreadPool& pool);
+    const WeightStorageT& weights, WeightStorageT& forward,
+    WeightStorageT& grad, hwy::ThreadPool& pool);
 
 constexpr int EOS_ID = 1;
 
