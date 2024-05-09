@@ -1702,6 +1702,28 @@ struct ForwardPass {
   std::array<float, kModelDim * kMaxThreads> even_odd;
 };
 
+template <typename ArrayT>
+void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
+                    const float scaling, float* HWY_RESTRICT output,
+                    size_t model_dim) {
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+    int token = prompt[pos];
+    Decompress(weights, token * model_dim, output + pos * model_dim, model_dim);
+    MulByConst(scaling, output + pos * model_dim, model_dim);
+  }
+}
+
+template<typename WT, typename XT, typename OutT>
+void ApplyRMSNorm(const WT* HWY_RESTRICT weights, const XT* HWY_RESTRICT x,
+                  size_t model_dim, size_t num_tokens,
+                  OutT* HWY_RESTRICT output,
+                  hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t offset = pos * model_dim;
+    RMSNorm(x + offset, weights, output + offset, model_dim);
+  }
+}
+
 template <typename TConfig>
 void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
                        size_t num_tokens,
@@ -1716,12 +1738,9 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
-  for (size_t pos = 0; pos < num_tokens; ++pos) {
-    RMSNorm(activations.input.data() + pos * kModelDim,
-            weights.pre_attention_norm_scale.data(),
-            activations.pre_att_rms_out.data() + pos * kModelDim,
-            kModelDim);
-  }
+  ApplyRMSNorm(weights.pre_attention_norm_scale.data(),
+               activations.input.data(), kModelDim, num_tokens,
+               activations.pre_att_rms_out.data(), pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
@@ -1792,11 +1811,9 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
         activations.att_post2.data() + pos * kModelDim,
         activations.attention_out.data() + pos * kModelDim, kModelDim);
   }
-  for (size_t pos = 0; pos < num_tokens; ++pos) {
-    RMSNorm(activations.attention_out.data() + pos * kModelDim,
-            weights.pre_ffw_norm_scale.data(),
-            activations.bf_pre_ffw_rms_out.data() + pos * kModelDim, kModelDim);
-  }
+  ApplyRMSNorm(weights.pre_ffw_norm_scale.data(),
+               activations.attention_out.data(), kModelDim, num_tokens,
+               activations.bf_pre_ffw_rms_out.data(), pool);
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
@@ -1833,17 +1850,6 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
 }
 
 
-template <typename ArrayT>
-void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
-                    const float scaling, float* HWY_RESTRICT output,
-                    size_t model_dim) {
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    int token = prompt[pos];
-    Decompress(weights, token * model_dim, output + pos * model_dim, model_dim);
-    MulByConst(scaling, output + pos * model_dim, model_dim);
-  }
-}
-
 template <typename TConfig>
 float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                                      const WeightStorageT& weights_u8,
@@ -1873,12 +1879,10 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
                       output, pool);
   }
 
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    RMSNorm(forward->final_layer_output.data() + pos * kModelDim,
-            weights.final_norm_scale.data(),
-            forward->final_norm_output.data() + pos * kModelDim,
-            kModelDim);
-  }
+  ApplyRMSNorm(weights.final_norm_scale.data(),
+               forward->final_layer_output.data(),
+               kModelDim, num_tokens, forward->final_norm_output.data(), pool);
+
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     MatVec<kVocabSize, kModelDim>(
         weights.embedder_input_embedding, 0,
