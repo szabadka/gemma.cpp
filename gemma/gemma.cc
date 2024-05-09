@@ -1670,8 +1670,20 @@ template <typename TConfig>
 struct ForwardLayer {
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kModelDim = TConfig::kModelDim;
+  static constexpr size_t kQKVDim = TConfig::kQKVDim;
+  static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   std::array<float, kSeqLen * kModelDim> input;
+  std::array<float, kSeqLen * kModelDim> pre_att_rms_out;
+  std::array<float, kSeqLen * kHeads * kQKVDim> q;
+  std::array<float, kSeqLen * kHeads * kSeqLen> att;
+  std::array<float, kSeqLen * kHeads * kQKVDim> att_out;
+  std::array<float, kSeqLen * kModelDim> att_post1;
+  std::array<float, kSeqLen * kModelDim> att_post2;
   std::array<float, kSeqLen * kModelDim> attention_out;
+  std::array<float, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
+  std::array<float, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
+  std::array<float, kSeqLen * kModelDim> ffw_out;
 };
 
 template <typename TConfig>
@@ -1750,7 +1762,8 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       RMSNorm(layer_activations.input.data() + pos * kModelDim,
               layer_weights->pre_attention_norm_scale.data(),
-              activations.pre_att_rms_out.data() + pos * kModelDim, kModelDim);
+              layer_activations.pre_att_rms_out.data() + pos * kModelDim,
+              kModelDim);
     }
     // Multi-Query Attention
     static constexpr size_t kQKVDim = TConfig::kQKVDim;
@@ -1761,9 +1774,10 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
         static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-      float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
+      float* x = layer_activations.pre_att_rms_out.data() + pos * kModelDim;
 
-      float* HWY_RESTRICT q = activations.q.data() + pos * kHeads * kQKVDim;
+      float* HWY_RESTRICT q =
+          layer_activations.q.data() + pos * kHeads * kQKVDim;
       MatVec<kHeads * kQKVDim, kModelDim>(
           layer_weights->qkv_einsum_w, 0, x,
           forward->even_odd.data(), q, pool);
@@ -1783,7 +1797,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       const size_t head = task % kHeads;
       const size_t pos = task / kHeads;
       float* HWY_RESTRICT q =
-          activations.q.data() + (pos * kHeads + head) * kQKVDim;
+          layer_activations.q.data() + (pos * kHeads + head) * kQKVDim;
       // Calculate scores
       float* HWY_RESTRICT head_att = activations.att.data() +
                                      head * kSeqLen +
@@ -1857,7 +1871,8 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       PROFILER_ZONE("Gen.FFW.GatedGELU");
       const hwy::bfloat16_t* HWY_RESTRICT vec =
           activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
-      float* HWY_RESTRICT out = activations.ffw_hidden.data() + hidden_offset;
+      float* HWY_RESTRICT out =
+          activations.ffw_hidden.data() + hidden_offset;
       float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
 
       MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
