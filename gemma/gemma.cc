@@ -1799,7 +1799,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       float* HWY_RESTRICT q =
           layer_activations.q.data() + (pos * kHeads + head) * kQKVDim;
       // Calculate scores
-      float* HWY_RESTRICT head_att = activations.att.data() +
+      float* HWY_RESTRICT head_att = layer_activations.att.data() +
                                      head * kSeqLen +
                                      pos * kHeads * kSeqLen;
 
