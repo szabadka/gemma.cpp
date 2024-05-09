@@ -891,11 +891,9 @@ static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,
   Softmax(x, size, size);
 }
 
-static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
-                                       const size_t size,
-                                       const size_t max_pos) {
-  HWY_DASSERT(max_pos <= size);
-
+static HWY_NOINLINE void LogitsSoftCap(const float cap,
+                                       const float* x, float* out,
+                                       const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const D d;
@@ -903,15 +901,16 @@ static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
   const auto vcap = hn::Set(d, cap);
   const auto vinv_cap = hn::Div(hn::Set(d, 1.0f), vcap);
 
-  hn::Transform(d, x, size, [&vcap, &vinv_cap](D d, hn::Vec<D> v) HWY_ATTR {
-    return hn::Mul(vcap, hn::Tanh(d, hn::Mul(v, vinv_cap)));
-  });
+  for (size_t i = 0; i < size; i += hn::Lanes(d)) {
+    hn::Store(hn::Mul(vcap, hn::Tanh(d, hn::Mul(hn::Load(d, x + i), vinv_cap))),
+              d, out + i);
+  }
 }
 
 static HWY_INLINE HWY_MAYBE_UNUSED void LogitsSoftCap(const float cap,
                                                       float* HWY_RESTRICT x,
                                                       const size_t size) {
-  LogitsSoftCap(cap, x, size, size);
+  LogitsSoftCap(cap, x, x, size);
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED size_t

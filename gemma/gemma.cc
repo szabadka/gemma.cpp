@@ -1697,6 +1697,7 @@ struct ForwardPass {
   std::array<ForwardLayer<TConfig>, kLayers> layers;
   std::array<float, kSeqLen * kModelDim> final_layer_output;
   std::array<float, kSeqLen * kModelDim> final_norm_output;
+  std::array<float, kSeqLen * kVocabSize> raw_logits;
   std::array<float, kSeqLen * kVocabSize> logits;
 
   std::array<float, kModelDim * kMaxThreads> even_odd;
@@ -1888,10 +1889,11 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
         weights.embedder_input_embedding, 0,
         forward->final_norm_output.data() + pos * kModelDim,
         forward->even_odd.data(),
-        forward->logits.data() + pos * kVocabSize, pool);
+        forward->raw_logits.data() + pos * kVocabSize, pool);
   }
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    LogitsSoftCap(30.0f, forward->logits.data() + pos * kVocabSize,
+    LogitsSoftCap(30.0f, forward->raw_logits.data() + pos * kVocabSize,
+                  forward->logits.data() + pos * kVocabSize,
                   kVocabSize);
   }
   float total_entropy = 0.0f;
