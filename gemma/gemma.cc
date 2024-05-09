@@ -1678,10 +1678,10 @@ struct ForwardLayer {
   std::array<float, kSeqLen * kHeads * kQKVDim> q;
   std::array<float, kSeqLen * kHeads * kSeqLen> att;
   std::array<float, kSeqLen * kHeads * kQKVDim> att_out;
-  std::array<float, kSeqLen * kModelDim> att_post1;
+  std::array<float, kSeqLen * kHeads * kModelDim> att_post1;
   std::array<float, kSeqLen * kModelDim> att_post2;
   std::array<float, kSeqLen * kModelDim> attention_out;
-  std::array<float, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
+  std::array<hwy::bfloat16_t, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
   std::array<float, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
   std::array<float, kSeqLen * kModelDim> ffw_out;
 };
@@ -1750,9 +1750,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   }
 #endif
 
-  auto state = hwy::MakeUniqueAligned<Activations<TConfig, kSeqLen>>();
   auto kv_cache = CreateKVCacheT<TConfig>();
-  auto& activations = *state;
   for (size_t layer = 0; layer < kLayers; ++layer) {
     const auto* layer_weights = weights.GetLayer(layer);
     auto& layer_activations = forward->layers[layer];
@@ -1837,13 +1835,13 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       float* HWY_RESTRICT att_out =
           layer_activations.att_out.data() + pos * kHeads * kQKVDim;
       float* HWY_RESTRICT layer_out =
-          activations.att_post2.data() + pos * kModelDim;
+          layer_activations.att_post2.data() + pos * kModelDim;
       MatVec<kModelDim, kQKVDim>(
           layer_weights->attn_vec_einsum_w, 0, att_out,
           forward->even_odd.data(), layer_out, pool);
       for (size_t head = 1; head < kHeads; ++head) {
         float* HWY_RESTRICT head_out =
-            activations.att_post1.data() + head * kSeqLen * kModelDim;
+            layer_activations.att_post1.data() + head * kSeqLen * kModelDim;
         MatVec<kModelDim, kQKVDim>(
             layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
             att_out + head * kQKVDim,
@@ -1853,14 +1851,14 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
     }
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       Add(layer_activations.input.data() + pos * kModelDim,
-          activations.att_post2.data() + pos * kModelDim,
+          layer_activations.att_post2.data() + pos * kModelDim,
           layer_activations.attention_out.data() + pos * kModelDim,
           kModelDim);
     }
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       RMSNorm(layer_activations.attention_out.data() + pos * kModelDim,
               layer_weights->pre_ffw_norm_scale.data(),
-              activations.bf_pre_ffw_rms_out.data() + pos * kModelDim,
+              layer_activations.bf_pre_ffw_rms_out.data() + pos * kModelDim,
               kModelDim);
     }
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
@@ -1870,9 +1868,9 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       const size_t hidden_offset = pos * kFFHiddenDim * 2;
       PROFILER_ZONE("Gen.FFW.GatedGELU");
       const hwy::bfloat16_t* HWY_RESTRICT vec =
-          activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
+          layer_activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
       float* HWY_RESTRICT out =
-          activations.ffw_hidden.data() + hidden_offset;
+          layer_activations.ffw_hidden.data() + hidden_offset;
       float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
 
       MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
@@ -1894,11 +1892,11 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       PROFILER_ZONE("Gen.FFW\\GatedGELU");
       MatVecAdd<TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
           layer_weights->linear_w, 0,
-          activations.ffw_hidden.data() + hidden_offset,
+          layer_activations.ffw_hidden.data() + hidden_offset,
           layer_weights->ffw_output_biases.data(), even_odd,
-          activations.ffw_out.data() + pos * kModelDim, pool);
+          layer_activations.ffw_out.data() + pos * kModelDim, pool);
       Add(layer_activations.attention_out.data() + pos * kModelDim,
-          activations.ffw_out.data() + pos * kModelDim,
+          layer_activations.ffw_out.data() + pos * kModelDim,
           output + pos * kModelDim, kModelDim);
     }
   }
