@@ -1875,17 +1875,12 @@ template<size_t kVocabSize>
 float CrossEntropyLoss(const float* HWY_RESTRICT x,
                        const std::vector<int>& prompt,
                        hwy::ThreadPool& pool) {
-  HWY_ALIGN float p[kVocabSize];
-  float total_entropy = 0.0f;
+  float loss = 0.0f;
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    const float* HWY_RESTRICT logits = x + pos * kVocabSize;
-    memcpy(p, logits, sizeof(p));
-    Softmax(p, kVocabSize);
     const int next_token = prompt[pos + 1];
-    const float prob = p[next_token];
-    total_entropy -= std::log(prob) / std::log(2.0);
+    loss += SoftmaxCrossEntropy(x + pos * kVocabSize, kVocabSize, next_token);
   }
-  return total_entropy;
+  return loss;
 }
 
 template <typename TConfig>

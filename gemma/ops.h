@@ -856,6 +856,32 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
   MulByConstAndAdd(c, x, out, size, size);
 }
 
+static HWY_NOINLINE float SoftmaxCrossEntropy(
+    const float* HWY_RESTRICT x, const size_t size, const size_t idx) {
+  HWY_DASSERT(size != 0);
+  HWY_DASSERT(idx < size);
+
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+
+  const auto vmin = hn::Set(d, hwy::LowestValue<float>());
+  auto vmax = vmin;
+  Foreach(d, x, size, vmin,
+          [&vmax](const auto d, const auto value)
+              HWY_ATTR { vmax = hn::Max(vmax, value); });
+  vmax = hn::MaxOfLanes(d, vmax);
+
+  // Subtract max (avoid precision loss for large exponents) and exponentiate.
+  auto vsum = hn::Zero(d);
+  for (size_t i = 0; i < size; i += hn::Lanes(d)) {
+    vsum = hn::Add(vsum, hn::Exp(d, hn::Sub(hn::Load(d, x + i), vmax)));
+  }
+  float sum = hn::ReduceSum(d, vsum);
+  float maxval = hn::GetLane(vmax);
+  return (maxval - x[idx] + std::log(sum)) / std::log(2.0);
+}
+
 static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
                                  const size_t mask_pos) {
   HWY_DASSERT(size != 0);
