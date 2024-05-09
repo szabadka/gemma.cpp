@@ -1727,8 +1727,8 @@ void ApplyRMSNorm(const WT* HWY_RESTRICT weights, const XT* HWY_RESTRICT x,
 
 template <typename TConfig>
 void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
-                       size_t num_tokens,
                        ForwardLayer<TConfig>& activations,
+                       size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
                        float* HWY_RESTRICT output,
                        hwy::ThreadPool& pool) {
@@ -1850,6 +1850,41 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
   }
 }
 
+template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
+void ComputeLogits(const ArrayT& weights, const float* HWY_RESTRICT x,
+                   size_t num_tokens, float* HWY_RESTRICT even_odd,
+                   float* HWY_RESTRICT output, hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    MatVec<kVocabSize, kModelDim>(
+        weights, 0, x + pos * kModelDim, even_odd, output + pos * kVocabSize,
+        pool);
+  }
+}
+
+void ApplySoftcap(const float* HWY_RESTRICT x, float* HWY_RESTRICT output,
+                  size_t num_tokens, size_t vocab_size, hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    LogitsSoftCap(30.0f, x + pos * vocab_size, output + pos * vocab_size,
+                  vocab_size);
+  }
+}
+
+template<size_t kVocabSize>
+float CrossEntropyLoss(const float* HWY_RESTRICT x,
+                       const std::vector<int>& prompt,
+                       hwy::ThreadPool& pool) {
+  HWY_ALIGN float p[kVocabSize];
+  float total_entropy = 0.0f;
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+    const float* HWY_RESTRICT logits = x + pos * kVocabSize;
+    memcpy(p, logits, sizeof(p));
+    Softmax(p, kVocabSize);
+    const int next_token = prompt[pos + 1];
+    const float prob = p[next_token];
+    total_entropy -= std::log(prob) / std::log(2.0);
+  }
+  return total_entropy;
+}
 
 template <typename TConfig>
 float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
@@ -1875,48 +1910,26 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
     float* HWY_RESTRICT output = layer + 1 < kLayers ?
                                  forward->layers[layer + 1].input.data() :
                                  forward->final_layer_output.data();
-    ApplyForwardLayer(*weights.GetLayer(layer), num_tokens,
-                      forward->layers[layer], forward->even_odd.data(),
-                      output, pool);
+    ApplyForwardLayer(*weights.GetLayer(layer), forward->layers[layer],
+                      num_tokens, forward->even_odd.data(), output, pool);
   }
 
   ApplyRMSNorm(weights.final_norm_scale.data(),
                forward->final_layer_output.data(),
                kModelDim, num_tokens, forward->final_norm_output.data(), pool);
 
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    MatVec<kVocabSize, kModelDim>(
-        weights.embedder_input_embedding, 0,
-        forward->final_norm_output.data() + pos * kModelDim,
-        forward->even_odd.data(),
-        forward->raw_logits.data() + pos * kVocabSize, pool);
-  }
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    LogitsSoftCap(30.0f, forward->raw_logits.data() + pos * kVocabSize,
-                  forward->logits.data() + pos * kVocabSize,
-                  kVocabSize);
-  }
-  float total_entropy = 0.0f;
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
-    Softmax(forward->logits.data() + pos * kVocabSize, kVocabSize);
-    const int next_token = prompt[pos + 1];
-    const float prob = forward->logits[pos * kVocabSize + next_token];
-    total_entropy -= std::log(prob) / std::log(2.0);
-  }
-  return total_entropy;
+  ComputeLogits<kModelDim, kVocabSize>(
+      weights.embedder_input_embedding, forward->final_norm_output.data(),
+      num_tokens, forward->even_odd.data(), forward->raw_logits.data(), pool);
+
+  ApplySoftcap(forward->raw_logits.data(), forward->logits.data(),
+               num_tokens, kVocabSize, pool);
+
+  float loss = CrossEntropyLoss<kVocabSize>(forward->logits.data(), prompt,
+                                            pool);
+  return loss;
 
 #if 0
-  ApplyRMSNorm(weights.final_norm_scale.data(),
-               forward.final_layer_output.data(),
-               forward.final_norm_output.data());
-
-  ComputeLogits(weights.embedder_input_embedding.data(),
-                forward.final_norm_output.data(), forward.logits.data());
-
-  ApplySoftcap(forward.logits.data(), forward.softcap_logits.data());
-
-  float loss = ComputeCrossEntropyLoss(forward.softcap_logits.data());
-
   std::vector<float> loss_grad(num_tokens * kVocabSize);
   LossGradient(forward.softcap_logits.data(), num_tokens, kVocabSize,
                loss_grad.data());
