@@ -1820,7 +1820,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
 
       // Weighted summation
       float* HWY_RESTRICT att_out =
-          activations.att_out.data() + head * kQKVDim +
+          layer_activations.att_out.data() + head * kQKVDim +
           pos * kHeads * kQKVDim;
       hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
       for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
@@ -1835,7 +1835,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
 
     for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
       float* HWY_RESTRICT att_out =
-          activations.att_out.data() + pos * kHeads * kQKVDim;
+          layer_activations.att_out.data() + pos * kHeads * kQKVDim;
       float* HWY_RESTRICT layer_out =
           activations.att_post2.data() + pos * kModelDim;
       MatVec<kModelDim, kQKVDim>(
