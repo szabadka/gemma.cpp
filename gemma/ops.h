@@ -914,6 +914,37 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   MulByConst(mul, x, size, mask_pos);
 }
 
+static HWY_NOINLINE void Softmax(const float* HWY_RESTRICT x,
+                                 const size_t size,
+                                 const size_t mask_pos,
+                                 float* HWY_RESTRICT output) {
+  HWY_DASSERT(size != 0);
+  HWY_DASSERT(mask_pos <= size);
+
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+
+  const auto vmin = hn::Set(d, hwy::LowestValue<float>());
+  auto vmax = vmin;
+  Foreach(d, x, mask_pos, vmin,
+          [&vmax](const auto d, const auto value)
+              HWY_ATTR { vmax = hn::Max(vmax, value); });
+  vmax = hn::MaxOfLanes(d, vmax);
+
+  // Subtract max (avoid precision loss for large exponents) and exponentiate.
+  auto sum = hn::Zero(d);
+  for (size_t i = 0; i < size; i += hn::Lanes(d)) {
+    const auto out = hn::Exp(d, hn::Sub(Load(d, x + i), vmax));
+    sum = hn::Add(sum, out);
+    hn::Store(out, d, output + i);
+  }
+
+  // Normalize to probability distribution
+  const float mul = 1.0f / hn::ReduceSum(d, sum);
+  MulByConst(mul, output, size, mask_pos);
+}
+
 static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,
                                                 const size_t size) {
   Softmax(x, size, size);

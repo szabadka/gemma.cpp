@@ -113,6 +113,29 @@ void LogPrompt(const std::vector<int>& prompt) {
   printf("\n");
 }
 
+template<size_t kLen>
+void RandInit(std::array<float, kLen>& x, std::mt19937& gen) {
+  std::normal_distribution<float> dist(0.0f, 1.0f);
+  for (size_t i = 0; i < kLen; ++i) {
+    x[i] = dist(gen);
+  }
+}
+
+template<size_t kLen>
+void ZeroInit(std::array<float, kLen>& x) {
+  for (size_t i = 0; i < kLen; ++i) {
+    x[i] = 0.0f;
+  }
+}
+
+template<size_t kLen>
+void Update(const std::array<float, kLen>& g, float scale,
+            std::array<float, kLen>& x) {
+  for (size_t i = 0; i < kLen; ++i) {
+    x[i] += scale * g[i];
+  }
+}
+
 void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
   std::mt19937 gen(42);
@@ -120,25 +143,32 @@ void Run(Args& args) {
   WeightStorageT weights = AllocateWeights(args.model_type, pool);
   WeightStorageT grad = AllocateWeights(args.model_type, pool);
   WeightStorageT forward = AllocateForwardPass(args.model_type);
+  WeightStorageT backward = AllocateBackwardPass(args.model_type);
+  auto* ftiny = reinterpret_cast<ForwardPass<ConfigGemmaTiny>*>(forward.get());
+  auto* btiny =
+      reinterpret_cast<BackwardPass<ConfigGemmaTiny>*>(backward.get());
 
   InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
+  RandInit(ftiny->logits, gen);
 
   printf("Initial weights:\n");
   LogWeightStats(args.model_type, weights);
 
-  constexpr size_t kBatchSize = 16;
-  float learning_rate = 0.001f;
+  constexpr size_t kBatchSize = 1;
+  float learning_rate = 0.1f;
 
   ReverseSequenceSampler training_task(10);
+  std::vector<int> prompt;
+  size_t context_size = training_task.Sample(gen, prompt);
   for (;;) {
     InitWeights(args.model_type, grad, InitMode::ZERO_INIT, pool);
     float total_loss = 0.0f;
+    ZeroInit(btiny->logits);
     for (size_t i = 0; i < kBatchSize; ++i) {
-      std::vector<int> prompt;
-      size_t context_size = training_task.Sample(gen, prompt);
       LogPrompt(prompt);
       total_loss += CrossEntropyLossWithGradUpdate(
-          prompt, context_size, args.model_type, weights, forward, grad, pool);
+          prompt, context_size, args.model_type, weights, forward, grad,
+          backward, pool);
     }
     total_loss /= kBatchSize;
 
@@ -147,6 +177,7 @@ void Run(Args& args) {
 
     const float scale = -learning_rate / kBatchSize;
     UpdateWeights(args.model_type, grad, scale, weights, pool);
+    Update(btiny->logits, scale, ftiny->logits);
     printf("total_loss: %f\n", total_loss);
     if (total_loss < 0.01f) {
       break;
