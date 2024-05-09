@@ -1689,6 +1689,8 @@ struct ForwardLayer {
 
 template <typename TConfig>
 struct ForwardPass {
+  ForwardPass() {}  // prevents placement-new calling memset
+
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
