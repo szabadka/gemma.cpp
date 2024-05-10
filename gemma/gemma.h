@@ -144,6 +144,7 @@ struct ForwardLayer {
   std::array<float, kSeqLen * kModelDim> attention_out;
   std::array<float, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
   std::array<float, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
+  std::array<float, kSeqLen * kFFHiddenDim> ffw_hidden_gated;
   std::array<float, kSeqLen * kModelDim> ffw_out;
 };
 

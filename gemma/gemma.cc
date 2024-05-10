@@ -1781,7 +1781,7 @@ void MatMulVJP(const std::array<float, kRows * kCols>& weights,
 }
 
 template <typename TConfig>
-void ApplyForwardLayer(const Layer<TConfig>& weights,
+void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
                        ForwardLayer<TConfig>& activations,
                        size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
@@ -1794,6 +1794,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
+#if 1
   ApplyRMSNorm(weights.pre_attention_norm_scale.data(),
                activations.input.data(), kModelDim, num_tokens,
                activations.pre_att_rms_out.data(), pool);
@@ -1893,27 +1894,36 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
-    float* HWY_RESTRICT out =
+    const float* HWY_RESTRICT out =
         activations.ffw_hidden.data() + hidden_offset;
-    float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
+    const float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
+    float* HWY_RESTRICT out_gated =
+        activations.ffw_hidden_gated.data() + pos * kFFHiddenDim;
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
     using VF = hn::Vec<DF>;
-    hn::Transform1(DF(), out, kFFHiddenDim, out_mul,
-                   [](DF df, VF v, VF mul)
-                   HWY_ATTR { return hn::Mul(mul, Gelu(df, v)); });
+    DF df;
+    for (size_t i = 0; i < kFFHiddenDim; i += Lanes(df)) {
+      const auto v = Load(df, out + i);
+      const auto mul = Load(df, out_mul + i);
+      hn::Store(hn::Mul(mul, Gelu(df, v)), df, out_gated + i);
+    }
   }
+#endif
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    const size_t hidden_offset = pos * kFFHiddenDim * 2;
     MatVec<kModelDim, kFFHiddenDim>(
-        weights.linear_w, 0, activations.ffw_hidden.data() + hidden_offset,
+        weights.linear_w, 0,
+        activations.ffw_hidden_gated.data() + pos * kFFHiddenDim,
         even_odd, activations.ffw_out.data() + pos * kModelDim, pool);
+    //even_odd, output + pos * kModelDim, pool);
   }
+#if 1
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     Add(activations.attention_out.data() + pos * kModelDim,
         activations.ffw_out.data() + pos * kModelDim,
         output + pos * kModelDim, kModelDim);
   }
+#endif
 }
 
 template <typename TConfig>
@@ -2006,7 +2016,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   const float kEmbScaling = EmbeddingScaling<TConfig>();
 
   using TWeights = Weights<TConfig>;
-  const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
+  const auto& weights = *reinterpret_cast<const CompressedWeights<TConfig>*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
 
   HWY_DASSERT(context_size > 0);
@@ -2018,7 +2028,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   ForwardPass<TConfig>* backward =
       reinterpret_cast<ForwardPass<TConfig>*>(backward_u8.get());
 
-#if 0
+#if 1
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
                  forward->layers[0].input.data(), kModelDim);
 
@@ -2045,6 +2055,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   float loss = CrossEntropyLoss<kVocabSize>(forward->logits.data(), prompt,
                                             context_size, pool);
 
+#if 0
   LossGradient<kVocabSize>(forward->logits.data(), prompt, context_size,
                            backward->logits.data(), pool);
 
@@ -2064,7 +2075,6 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
              grad.final_norm_scale.data(),
              backward->final_layer_output.data(), pool);
 
-#if 0
   for (int layer = TConfig::kLayers - 1; layer >= 0; --layer) {
     float* HWY_RESTRICT next_layer_grad =
         layer + 1 < kLayers ? backward->layers[layer + 1].input.data()
