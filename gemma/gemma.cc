@@ -1854,13 +1854,39 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
-void ComputeLogits(const ArrayT& weights, const float* HWY_RESTRICT x,
+void ComputeLogits(const ArrayT& weights,  // kVocabSize * kModelDim
+                   const float* HWY_RESTRICT x,  // num_tokens * kModelDim
                    size_t num_tokens, float* HWY_RESTRICT even_odd,
-                   float* HWY_RESTRICT output, hwy::ThreadPool& pool) {
+                   float* HWY_RESTRICT output,  // num_tokens * kVocabSize
+                   hwy::ThreadPool& pool) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kVocabSize, kModelDim>(
         weights, 0, x + pos * kModelDim, even_odd, output + pos * kVocabSize,
         pool);
+  }
+}
+
+template <size_t kModelDim, size_t kVocabSize>
+void LogitsVJP(const std::array<float, kVocabSize * kModelDim>& weights,
+               const float* HWY_RESTRICT x,  // num_tokens * kModelDim
+               const float* HWY_RESTRICT v,  // num_tokens * kVocabSize
+               size_t num_tokens, float* HWY_RESTRICT even_odd,
+               std::array<float, kVocabSize * kModelDim>& grad_w,
+               float* HWY_RESTRICT grad_x,  // num_tokens * kModelDim
+               hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t voffs = pos * kVocabSize;
+    const size_t doffs = pos * kModelDim;
+    for (size_t j = 0; j < kVocabSize; ++j) {
+      MulByConstAndAdd(v[voffs + j], &x[doffs], &grad_w[j * kModelDim],
+                       kModelDim);
+    }
+    // &grad_x[doffs] = &v[voffs] * weights (row vec * matrix)
+    memset(&grad_x[doffs], 0, kModelDim * sizeof(grad_x[0]));
+    for (size_t j = 0; j < kVocabSize; ++j) {
+      MulByConstAndAdd(v[voffs + j], &weights[j * kModelDim], &grad_x[doffs],
+                       kModelDim);
+    }
   }
 }
 
@@ -1927,8 +1953,10 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kLayers = TConfig::kLayers;
   const float kEmbScaling = EmbeddingScaling<TConfig>();
-  const auto& weights = *reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
-  auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
+
+  using TWeights = Weights<TConfig>;
+  const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
+  auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
 
   HWY_DASSERT(context_size > 0);
   HWY_DASSERT(context_size < prompt.size());
@@ -1954,12 +1982,11 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   ApplyRMSNorm(weights.final_norm_scale.data(),
                forward->final_layer_output.data(),
                kModelDim, num_tokens, forward->final_norm_output.data(), pool);
+#endif
 
   ComputeLogits<kModelDim, kVocabSize>(
       weights.embedder_input_embedding, forward->final_norm_output.data(),
       num_tokens, forward->even_odd.data(), forward->raw_logits.data(), pool);
-
-#endif
 
   ApplySoftcap(forward->raw_logits.data(), forward->logits.data(),
                num_tokens, kVocabSize, pool);
@@ -1973,11 +2000,13 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   SoftcapVJP(forward->logits.data(), backward->logits.data(), num_tokens,
              kVocabSize, backward->raw_logits.data(), pool);
 
-#if 0
-  std::vector<float> logits_grad(num_tokens * kModelDim);
-  FinalLogitsVJP(weights, forward.final_norm_out.data(), softcap_grad.data(),
-                 num_tokens, grad, logits_grad.data());
+  LogitsVJP<kModelDim, kVocabSize>(
+      weights.embedder_input_embedding, forward->final_norm_output.data(),
+      backward->raw_logits.data(), num_tokens, forward->even_odd.data(),
+      grad.embedder_input_embedding, backward->final_norm_output.data(),
+      pool);
 
+#if 0
   std::vector<float> final_norm_grad(num_tokens * kModelDim);
   RMSNormVJP(weights, forward.layers.back().output.data(), logits_grad.data(),
              num_tokens, grad, final_norm_grad.data());

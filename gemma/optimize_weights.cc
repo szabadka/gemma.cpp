@@ -149,7 +149,7 @@ void Run(Args& args) {
       reinterpret_cast<BackwardPass<ConfigGemmaTiny>*>(backward.get());
 
   InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
-  RandInit(ftiny->raw_logits, gen);
+  RandInit(ftiny->final_norm_output, gen);
 
   printf("Initial weights:\n");
   LogWeightStats(args.model_type, weights);
@@ -161,10 +161,10 @@ void Run(Args& args) {
   std::vector<int> prompt;
   size_t context_size = training_task.Sample(gen, prompt);
   size_t steps = 0;
-  for (; steps < 100000; ++steps) {
+  for (; steps < 10000; ++steps) {
     InitWeights(args.model_type, grad, InitMode::ZERO_INIT, pool);
     float total_loss = 0.0f;
-    ZeroInit(btiny->raw_logits);
+    ZeroInit(btiny->final_norm_output);
     for (size_t i = 0; i < kBatchSize; ++i) {
       LogPrompt(prompt);
       total_loss += CrossEntropyLossWithGradUpdate(
@@ -178,7 +178,7 @@ void Run(Args& args) {
 
     const float scale = -learning_rate / kBatchSize;
     UpdateWeights(args.model_type, grad, scale, weights, pool);
-    Update(btiny->raw_logits, scale, ftiny->raw_logits);
+    Update(btiny->final_norm_output, scale, ftiny->final_norm_output);
     printf("total_loss: %f\n", total_loss);
     if (total_loss < 0.01f) {
       break;
