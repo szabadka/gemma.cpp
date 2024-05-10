@@ -1554,22 +1554,26 @@ void CompressWeightsT(gcpp::Model model, const Path& weights,
   }
 }
 
+void LogVec(const char* name, const float* data, size_t len) {
+  float minval = std::numeric_limits<float>::max();
+  float maxval = std::numeric_limits<float>::min();
+  double sum = 0.0f;
+  for (size_t i = 0; i < len; ++i) {
+    minval = std::min(minval, data[i]);
+    maxval = std::max(maxval, data[i]);
+    sum += data[i];
+  }
+  float avg = sum / len;
+  printf("%-20s  %12zu   %13.10f   %8.5f   %13.10f\n",
+         name, len, minval, avg, maxval);
+}
+
 class WeightLogger {
  public:
   template <typename MatT, size_t kCapacity>
   void operator()(const char* name, const float* data,
                   CompressedArray<MatT, kCapacity>* compressed) {
-    float minval = std::numeric_limits<float>::max();
-    float maxval = std::numeric_limits<float>::min();
-    double sum = 0.0f;
-    for (size_t i = 0; i < kCapacity; ++i) {
-      minval = std::min(minval, data[i]);
-      maxval = std::max(maxval, data[i]);
-      sum += data[i];
-    }
-    float avg = sum / kCapacity;
-    printf("%-20s  %12zu   %8.5f   %8.5f   %8.5f\n",
-           name, kCapacity, minval, avg, maxval);
+    LogVec(name, data, kCapacity);
     total_weights += kCapacity;
   }
   size_t total_weights = 0;
@@ -1725,6 +1729,31 @@ void ApplyRMSNorm(const WT* HWY_RESTRICT weights, const XT* HWY_RESTRICT x,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t offset = pos * model_dim;
     RMSNorm(x + offset, weights, output + offset, model_dim);
+  }
+}
+
+void RMSNormVJP(const float* HWY_RESTRICT weights, const float* HWY_RESTRICT x,
+                const float* HWY_RESTRICT v, size_t model_dim,
+                size_t num_tokens, float* HWY_RESTRICT grad_w,
+                float* HWY_RESTRICT grad_x, hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t offset = pos * model_dim;
+    constexpr float eps = 1e-6f;
+    float ss = SquaredL2(x + offset, model_dim);
+    ss = 1.0f / sqrtf(ss / StaticCast<float>(model_dim) + eps);
+    for (size_t i = 0; i < model_dim; ++i) {
+      grad_w[i] += v[offset + i] * x[offset + i] * ss;
+    }
+    const float ss3 = ss * ss * ss / StaticCast<float>(model_dim);
+    float tmp = 0.0f;
+    for (size_t i = 0; i < model_dim; ++i) {
+      tmp += (1.0f + weights[i]) * v[offset + i] * x[offset + i];
+    }
+    tmp *= ss3;
+    for (size_t i = 0; i < model_dim; ++i) {
+      grad_x[offset + i] = ss * (1.0f + weights[i]) * v[offset + i] -
+                           tmp * x[offset + i];
+    }
   }
 }
 
@@ -1978,11 +2007,11 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
     ApplyForwardLayer(*weights.GetLayer(layer), forward->layers[layer],
                       num_tokens, forward->even_odd.data(), output, pool);
   }
+#endif
 
   ApplyRMSNorm(weights.final_norm_scale.data(),
                forward->final_layer_output.data(),
                kModelDim, num_tokens, forward->final_norm_output.data(), pool);
-#endif
 
   ComputeLogits<kModelDim, kVocabSize>(
       weights.embedder_input_embedding, forward->final_norm_output.data(),
@@ -2006,11 +2035,14 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       grad.embedder_input_embedding, backward->final_norm_output.data(),
       pool);
 
-#if 0
-  std::vector<float> final_norm_grad(num_tokens * kModelDim);
-  RMSNormVJP(weights, forward.layers.back().output.data(), logits_grad.data(),
-             num_tokens, grad, final_norm_grad.data());
+  RMSNormVJP(weights.final_norm_scale.data(),
+             forward->final_layer_output.data(),
+             backward->final_norm_output.data(),
+             kModelDim, num_tokens,
+             grad.final_norm_scale.data(),
+             backward->final_layer_output.data(), pool);
 
+#if 0
   std::vector<float> next_layer_grad = final_norm_grad;
   std::vector<float> layer_grad(num_tokens * kModelDim);
   for (int layer = TConfig::kLayers - 1; layer >= 0; --layer) {
