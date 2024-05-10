@@ -972,6 +972,25 @@ static HWY_INLINE HWY_MAYBE_UNUSED void LogitsSoftCap(const float cap,
   LogitsSoftCap(cap, x, x, size);
 }
 
+static HWY_NOINLINE void SoftCapGrad(const float cap,
+                                     const float* HWY_RESTRICT out, float* grad,
+                                     const size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+
+  const auto one = hn::Set(d, 1.0f);
+  const auto vcap = hn::Set(d, cap);
+  const auto vinv_cap = hn::Div(hn::Set(d, 1.0f), vcap);
+
+  // f(x) = c*tanh(x/c)
+  // f'(x) = 1 - tanh(x/c)^2 = 1 - (f(x)/c)^2
+  for (size_t i = 0; i < size; i += hn::Lanes(d)) {
+    const auto scaled = hn::Mul(hn::Load(d, out + i), vinv_cap);
+    hn::Store(hn::Sub(one, hn::Mul(scaled, scaled)), d, grad + i);
+  }
+}
+
 static HWY_NOINLINE HWY_MAYBE_UNUSED size_t
 SampleArgmax(const float* probabilities, size_t vocab_size) {
   size_t max_index = 0;

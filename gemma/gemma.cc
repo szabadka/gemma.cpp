@@ -1872,6 +1872,16 @@ void ApplySoftcap(const float* HWY_RESTRICT x, float* HWY_RESTRICT output,
   }
 }
 
+void SoftcapVJP(const float* HWY_RESTRICT output, const float* HWY_RESTRICT v,
+                size_t num_tokens, size_t vocab_size,
+                float* HWY_RESTRICT grad, hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t offset = pos * vocab_size;
+    SoftCapGrad(30.0f, output + offset, grad + offset, vocab_size);
+    MulBy(v + offset, grad + offset, vocab_size);
+  }
+}
+
 template<size_t kVocabSize>
 float CrossEntropyLoss(const float* HWY_RESTRICT x,
                        const std::vector<int>& prompt,
@@ -1949,9 +1959,10 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
       weights.embedder_input_embedding, forward->final_norm_output.data(),
       num_tokens, forward->even_odd.data(), forward->raw_logits.data(), pool);
 
+#endif
+
   ApplySoftcap(forward->raw_logits.data(), forward->logits.data(),
                num_tokens, kVocabSize, pool);
-#endif
 
   float loss = CrossEntropyLoss<kVocabSize>(forward->logits.data(), prompt,
                                             context_size, pool);
@@ -1959,11 +1970,10 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   LossGradient<kVocabSize>(forward->logits.data(), prompt, context_size,
                            backward->logits.data(), pool);
 
-#if 0
-  std::vector<float> softcap_grad(num_tokens * kVocabSize);
-  SoftcapVJP(forward.logits.data(), loss_grad.data(), num_tokens, kVocabSize,
-             softcap_grad.data());
+  SoftcapVJP(forward->logits.data(), backward->logits.data(), num_tokens,
+             kVocabSize, backward->raw_logits.data(), pool);
 
+#if 0
   std::vector<float> logits_grad(num_tokens * kModelDim);
   FinalLogitsVJP(weights, forward.final_norm_out.data(), softcap_grad.data(),
                  num_tokens, grad, logits_grad.data());
