@@ -1873,24 +1873,10 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
                activations.bf_pre_ffw_rms_out.data(), pool);
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    const size_t hidden_offset = pos * kFFHiddenDim * 2;
-    const float* HWY_RESTRICT vec =
-        activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
-    float* HWY_RESTRICT out_mul =
-        activations.ffw_hidden.data() + hidden_offset + kFFHiddenDim;
-    MatVec<kFFHiddenDim, kModelDim>(
-        weights.gating_einsum_w, kFFHiddenDim * kModelDim, vec,
-        even_odd, out_mul, pool);
-  }
-  for (size_t pos = 0; pos < num_tokens; ++pos) {
-    // Gate, will go through the nonlinearity.
-    const size_t hidden_offset = pos * kFFHiddenDim * 2;
-    const float* HWY_RESTRICT vec =
-        activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
-    float* HWY_RESTRICT out =
-        activations.ffw_hidden.data() + hidden_offset;
-    MatVec<kFFHiddenDim, kModelDim>(
-        weights.gating_einsum_w, 0, vec, even_odd, out, pool);
+    MatVec<kFFHiddenDim * 2, kModelDim>(
+        weights.gating_einsum_w, 0,
+        activations.bf_pre_ffw_rms_out.data() + pos * kModelDim, even_odd,
+        activations.ffw_hidden.data() + pos * kFFHiddenDim * 2, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
