@@ -1758,7 +1758,7 @@ void RMSNormVJP(const float* HWY_RESTRICT weights, const float* HWY_RESTRICT x,
 }
 
 template <typename TConfig>
-void ApplyForwardLayer(const Layer<TConfig>& weights,
+void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
                        ForwardLayer<TConfig>& activations,
                        size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
@@ -1847,35 +1847,46 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   ApplyRMSNorm(weights.pre_ffw_norm_scale.data(),
                activations.attention_out.data(), kModelDim, num_tokens,
                activations.bf_pre_ffw_rms_out.data(), pool);
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+    const size_t hidden_offset = pos * kFFHiddenDim * 2;
+    const float* HWY_RESTRICT vec =
+        activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
+    float* HWY_RESTRICT out_mul =
+        activations.ffw_hidden.data() + hidden_offset + kFFHiddenDim;
+    MatVec<kFFHiddenDim, kModelDim>(
+        weights.gating_einsum_w, kFFHiddenDim * kModelDim, vec,
+        even_odd, out_mul, pool);
+  }
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    // Gate, will go through the nonlinearity.
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
     const float* HWY_RESTRICT vec =
         activations.bf_pre_ffw_rms_out.data() + pos * kModelDim;
     float* HWY_RESTRICT out =
         activations.ffw_hidden.data() + hidden_offset;
+    MatVec<kFFHiddenDim, kModelDim>(
+        weights.gating_einsum_w, 0, vec, even_odd, out, pool);
+  }
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t hidden_offset = pos * kFFHiddenDim * 2;
+    float* HWY_RESTRICT out =
+        activations.ffw_hidden.data() + hidden_offset;
     float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
-
-    MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
-        weights.gating_einsum_w, kFFHiddenDim * kModelDim, vec,
-        weights.ffw_gating_biases.data() + kFFHiddenDim, even_odd,
-        out_mul, pool);
-    // Gate, will go through the nonlinearity.
-    MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
-        weights.gating_einsum_w, 0, vec,
-        weights.ffw_gating_biases.data(), even_odd, out, pool);
-
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
     using VF = hn::Vec<DF>;
     hn::Transform1(DF(), out, kFFHiddenDim, out_mul,
                    [](DF df, VF v, VF mul)
                    HWY_ATTR { return hn::Mul(mul, Gelu(df, v)); });
-
-    MatVecAdd<TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
+  }
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t hidden_offset = pos * kFFHiddenDim * 2;
+    MatVec<kModelDim, kFFHiddenDim>(
         weights.linear_w, 0, activations.ffw_hidden.data() + hidden_offset,
-        weights.ffw_output_biases.data(), even_odd,
-        activations.ffw_out.data() + pos * kModelDim, pool);
+        even_odd, activations.ffw_out.data() + pos * kModelDim, pool);
+  }
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
     Add(activations.attention_out.data() + pos * kModelDim,
         activations.ffw_out.data() + pos * kModelDim,
         output + pos * kModelDim, kModelDim);
