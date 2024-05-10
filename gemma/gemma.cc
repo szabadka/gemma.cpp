@@ -1757,8 +1757,31 @@ void RMSNormVJP(const float* HWY_RESTRICT weights, const float* HWY_RESTRICT x,
   }
 }
 
+template <size_t kCols, size_t kRows>
+void MatMulVJP(const std::array<float, kRows * kCols>& weights,
+               const float* HWY_RESTRICT x,  // num_tokens * kCols
+               const float* HWY_RESTRICT v,  // num_tokens * kRows
+               size_t num_tokens, float* HWY_RESTRICT even_odd,
+               std::array<float, kRows * kCols>& grad_w,
+               float* HWY_RESTRICT grad_x,  // num_tokens * kCols
+               hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t voffs = pos * kRows;
+    const size_t xoffs = pos * kCols;
+    for (size_t j = 0; j < kRows; ++j) {
+      MulByConstAndAdd(v[voffs + j], &x[xoffs], &grad_w[j * kCols], kCols);
+    }
+    // &grad_x[xoffs] = &v[voffs] * weights (row vec * matrix)
+    memset(&grad_x[xoffs], 0, kCols * sizeof(grad_x[0]));
+    for (size_t j = 0; j < kRows; ++j) {
+      MulByConstAndAdd(v[voffs + j], &weights[j * kCols], &grad_x[xoffs],
+                       kCols);
+    }
+  }
+}
+
 template <typename TConfig>
-void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
+void ApplyForwardLayer(const Layer<TConfig>& weights,
                        ForwardLayer<TConfig>& activations,
                        size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
@@ -1893,6 +1916,18 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
   }
 }
 
+template <typename TConfig>
+void LayerVJP(const Layer<TConfig>& weights,
+              const ForwardLayer<TConfig>& forward,
+              const float* HWY_RESTRICT next_layer_grad,
+              size_t num_tokens,
+              float* HWY_RESTRICT even_odd,
+              Layer<TConfig>& grad,
+              const ForwardLayer<TConfig>& backward,
+              hwy::ThreadPool& pool) {
+
+}
+
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
 void ComputeLogits(const ArrayT& weights,  // kVocabSize * kModelDim
                    const float* HWY_RESTRICT x,  // num_tokens * kModelDim
@@ -1903,30 +1938,6 @@ void ComputeLogits(const ArrayT& weights,  // kVocabSize * kModelDim
     MatVec<kVocabSize, kModelDim>(
         weights, 0, x + pos * kModelDim, even_odd, output + pos * kVocabSize,
         pool);
-  }
-}
-
-template <size_t kModelDim, size_t kVocabSize>
-void LogitsVJP(const std::array<float, kVocabSize * kModelDim>& weights,
-               const float* HWY_RESTRICT x,  // num_tokens * kModelDim
-               const float* HWY_RESTRICT v,  // num_tokens * kVocabSize
-               size_t num_tokens, float* HWY_RESTRICT even_odd,
-               std::array<float, kVocabSize * kModelDim>& grad_w,
-               float* HWY_RESTRICT grad_x,  // num_tokens * kModelDim
-               hwy::ThreadPool& pool) {
-  for (size_t pos = 0; pos < num_tokens; ++pos) {
-    const size_t voffs = pos * kVocabSize;
-    const size_t doffs = pos * kModelDim;
-    for (size_t j = 0; j < kVocabSize; ++j) {
-      MulByConstAndAdd(v[voffs + j], &x[doffs], &grad_w[j * kModelDim],
-                       kModelDim);
-    }
-    // &grad_x[doffs] = &v[voffs] * weights (row vec * matrix)
-    memset(&grad_x[doffs], 0, kModelDim * sizeof(grad_x[0]));
-    for (size_t j = 0; j < kVocabSize; ++j) {
-      MulByConstAndAdd(v[voffs + j], &weights[j * kModelDim], &grad_x[doffs],
-                       kModelDim);
-    }
   }
 }
 
@@ -2004,8 +2015,8 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
 
   ForwardPass<TConfig>* forward =
       reinterpret_cast<ForwardPass<TConfig>*>(forward_u8.get());
-  BackwardPass<TConfig>* backward =
-      reinterpret_cast<BackwardPass<TConfig>*>(backward_u8.get());
+  ForwardPass<TConfig>* backward =
+      reinterpret_cast<ForwardPass<TConfig>*>(backward_u8.get());
 
 #if 0
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
@@ -2040,7 +2051,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   SoftcapVJP(forward->logits.data(), backward->logits.data(), num_tokens,
              kVocabSize, backward->raw_logits.data(), pool);
 
-  LogitsVJP<kModelDim, kVocabSize>(
+  MatMulVJP<kModelDim, kVocabSize>(
       weights.embedder_input_embedding, forward->final_norm_output.data(),
       backward->raw_logits.data(), num_tokens, forward->even_odd.data(),
       grad.embedder_input_embedding, backward->final_norm_output.data(),
@@ -2054,12 +2065,13 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
              backward->final_layer_output.data(), pool);
 
 #if 0
-  std::vector<float> next_layer_grad = final_norm_grad;
-  std::vector<float> layer_grad(num_tokens * kModelDim);
   for (int layer = TConfig::kLayers - 1; layer >= 0; --layer) {
-    LayerVJP(layer, weights, forward.layers[layer], next_layer_grad.data(),
-             num_tokens, grad, layer_grad.data());
-    next_layer_grad = layer_grad;
+    float* HWY_RESTRICT next_layer_grad =
+        layer + 1 < kLayers ? backward->layers[layer + 1].input.data()
+                            : backward->final_layer_output.data();
+    LayerVJP(*weights.GetLayer(layer), forward->layers[layer], next_layer_grad,
+             num_tokens, forward->even_odd.data(),
+             *grad.GetLayer(layer), backward->layers[layer], pool);
   }
 
   ImputEmbeddingVJP(weights, prompt, next_layer_grad.data(), grad);
