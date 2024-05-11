@@ -1801,19 +1801,31 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
-
     float* HWY_RESTRICT q = activations.q.data() + pos * kHeads * kQKVDim;
     MatVec<kHeads * kQKVDim, kModelDim>(
         weights.qkv_einsum_w, 0, x, even_odd, q, pool);
-
+  }
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
     float* HWY_RESTRICT kv = activations.kv.data() + pos * kHeads * kQKVDim * 2;
     MatVec<kQKVDim * 2, kModelDim>(weights.qkv_einsum_w,
                                    kHeads * kQKVDim * kModelDim, x,
                                    even_odd, kv, pool);
-    Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+  }
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    float* HWY_RESTRICT kv = activations.kv.data() + pos * kHeads * kQKVDim * 2;
+    Rope(kv, kQKVDim, pos);
   }
 
   const size_t num_tasks = kHeads * num_tokens;
+  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+    const size_t head = task % kHeads;
+    const size_t pos = task / kHeads;
+    float* HWY_RESTRICT q =
+        activations.q.data() + (pos * kHeads + head) * kQKVDim;
+    Rope(q, kQKVDim, pos);
+    MulByConst(kQueryScale, q, kQKVDim);
+  });
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
@@ -1823,10 +1835,6 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
     float* HWY_RESTRICT head_att = activations.att.data() +
                                    head * kSeqLen +
                                    pos * kHeads * kSeqLen;
-
-    Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
-    MulByConst(kQueryScale, q, kQKVDim);
-
     // Compute Q dot K scores
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
       float* HWY_RESTRICT k2 =
@@ -1834,9 +1842,23 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
       const float score = Dot(q, k2, kQKVDim);
       head_att[pos2 % kSeqLen] = score;
     }
+  });
+  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+    const size_t head = task % kHeads;
+    const size_t pos = task / kHeads;
+    // Calculate scores
+    float* HWY_RESTRICT head_att = activations.att.data() +
+                                   head * kSeqLen +
+                                   pos * kHeads * kSeqLen;
     Softmax(head_att, std::min(pos + 1, kSeqLen));
-
+  });
+  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+    const size_t head = task % kHeads;
+    const size_t pos = task / kHeads;
     // Weighted summation
+    float* HWY_RESTRICT head_att = activations.att.data() +
+                                   head * kSeqLen +
+                                   pos * kHeads * kSeqLen;
     float* HWY_RESTRICT att_out = activations.att_out.data() + head * kQKVDim +
                                   pos * kHeads * kQKVDim;
     hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
