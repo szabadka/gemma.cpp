@@ -1872,6 +1872,8 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
                                    pos * kHeads * kSeqLen;
     Softmax(head_att, std::min(pos + 1, kSeqLen));
   });
+#endif
+  const size_t num_tasks = kHeads * num_tokens;
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
@@ -1888,7 +1890,6 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
       MulByConstAndAdd(head_att[pos2 % kSeqLen], v2, att_out, kQKVDim);
     }
   });
-#endif
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kModelDim, kHeads * kQKVDim>(
         weights.attn_vec_einsum_w, 0,
@@ -1998,6 +1999,33 @@ void LayerVJP(const Layer<TConfig>& weights,
         weights.attn_vec_einsum_w, forward.att_out.data(),
         backward.attention_out.data(), num_tokens, even_odd,
         grad.attn_vec_einsum_w, backward.att_out.data(), pool);
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    hwy::ZeroBytes(backward.kv.data() + pos * kHeads * kQKVDim * 2 + kQKVDim,
+                   kQKVDim * sizeof(backward.kv[0]));
+  }
+  for (size_t head = 0; head < kHeads; ++head) {
+    for (size_t pos = 0; pos < num_tokens; ++pos) {
+      const float* HWY_RESTRICT f_head_att = forward.att.data() +
+                                             head * kSeqLen +
+                                             pos * kHeads * kSeqLen;
+      const float* HWY_RESTRICT b_att_out = backward.att_out.data() +
+                                            head * kQKVDim +
+                                            pos * kHeads * kQKVDim;
+      float* HWY_RESTRICT b_head_att = backward.att.data() +
+                                       head * kSeqLen +
+                                       pos * kHeads * kSeqLen;
+      for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
+        const float* HWY_RESTRICT f_v2 =
+            forward.kv.data() + pos2 * kHeads * kQKVDim * 2 + kQKVDim;
+        b_head_att[pos2] = Dot(b_att_out, f_v2, kQKVDim);
+      }
+      for (size_t pos2 = pos; pos2 < num_tokens; ++pos2) {
+        float* HWY_RESTRICT b_v2 =
+            backward.kv.data() + pos2 * kHeads * kQKVDim * 2 + kQKVDim;
+        MulByConstAndAdd(f_head_att[pos2], b_att_out, b_v2, kQKVDim);
+      }
+    }
+  }
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
