@@ -1893,6 +1893,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   ApplyRMSNorm(weights.pre_ffw_norm_scale.data(),
                activations.attention_out.data(), kModelDim, num_tokens,
                activations.bf_pre_ffw_rms_out.data(), pool);
+#endif
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kFFHiddenDim * 2, kModelDim>(
@@ -1900,8 +1901,6 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
         activations.bf_pre_ffw_rms_out.data() + pos * kModelDim, even_odd,
         activations.ffw_hidden.data() + pos * kFFHiddenDim * 2, pool);
   }
-#endif
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
     const float* HWY_RESTRICT out =
@@ -1970,6 +1969,11 @@ void LayerVJP(const Layer<TConfig>& weights,
       hn::Store(hn::Mul(v, hn::Mul(x, GeluGrad(df, y))), df, b_out + i);
     }
   }
+  MatMulVJP<kModelDim, kFFHiddenDim * 2>(
+      weights.gating_einsum_w,
+      forward.bf_pre_ffw_rms_out.data(), backward.ffw_hidden.data(),
+      num_tokens, even_odd, grad.gating_einsum_w,
+      backward.bf_pre_ffw_rms_out.data(), pool);
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
