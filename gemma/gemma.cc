@@ -1416,6 +1416,26 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadCompressedWeights(
   if (!loader.ReadAll(pool)) {
     HWY_ABORT("Failed to load model weights.");
   }
+  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
+    auto type = TConfig::kLayerConfig[layer_idx];
+    const size_t idx = static_cast<size_t>(layer_idx);
+    CompressedLayer<TConfig>* layer_weights = c_weights->GetLayer(idx);
+    if (type == LayerAttentionType::kGemma) {
+      static constexpr size_t kHeads = TConfig::kHeads;
+      static constexpr size_t kModelDim = TConfig::kModelDim;
+      static constexpr size_t kQKVDim = TConfig::kQKVDim;
+      std::array<SfpStream, kHeads * kQKVDim * kModelDim> tmp;
+      SfpStream* attn_vec_einsum_w = layer_weights->attn_vec_einsum_w.data();
+      for (size_t i = 0; i < kModelDim; ++i) {
+        for (size_t h = 0; h < kHeads; ++h) {
+          memcpy(&tmp[i * kHeads * kQKVDim + h * kQKVDim],
+                 &attn_vec_einsum_w[h * kQKVDim * kModelDim + i * kQKVDim],
+                 kQKVDim * sizeof(tmp[0]));
+        }
+      }
+      memcpy(attn_vec_einsum_w, tmp.data(), tmp.size() * sizeof(tmp[0]));
+    }
+  }
   if (TConfig::kNumTensorScales > 0) {
     size_t scale_pos = 0;
     for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
@@ -1781,7 +1801,7 @@ void MatMulVJP(const std::array<float, kRows * kCols>& weights,
 }
 
 template <typename TConfig>
-void ApplyForwardLayer(const Layer<TConfig>& weights,
+void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
                        ForwardLayer<TConfig>& activations,
                        size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
@@ -1794,7 +1814,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
-#if 0
+#if 1
   ApplyRMSNorm(weights.pre_attention_norm_scale.data(),
                activations.input.data(), kModelDim, num_tokens,
                activations.pre_att_rms_out.data(), pool);
@@ -1870,20 +1890,10 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   });
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    float* HWY_RESTRICT att_out =
-        activations.att_out.data() + pos * kHeads * kQKVDim;
-    float* HWY_RESTRICT layer_out =
-        activations.att_post2.data() + pos * kModelDim;
-    MatVec<kModelDim, kQKVDim>(
-        weights.attn_vec_einsum_w, 0, att_out, even_odd, layer_out, pool);
-    for (size_t head = 1; head < kHeads; ++head) {
-      float* HWY_RESTRICT head_out =
-          activations.att_post1.data() + head * kSeqLen * kModelDim;
-      MatVec<kModelDim, kQKVDim>(
-          weights.attn_vec_einsum_w, head * kModelDim * kQKVDim,
-          att_out + head * kQKVDim, even_odd, head_out, pool);
-      AddFrom(head_out, layer_out, kModelDim);
-    }
+    MatVec<kModelDim, kHeads * kQKVDim>(
+        weights.attn_vec_einsum_w, 0,
+        activations.att_out.data() + pos * kHeads * kQKVDim, even_odd,
+        activations.att_post2.data() + pos * kModelDim, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     Add(activations.input.data() + pos * kModelDim,
@@ -2060,7 +2070,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   const float kEmbScaling = EmbeddingScaling<TConfig>();
 
   using TWeights = Weights<TConfig>;
-  const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
+  const auto& weights = *reinterpret_cast<const CompressedWeights<TConfig>*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
 
   HWY_DASSERT(context_size > 0);
@@ -2072,7 +2082,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   ForwardPass<TConfig>* backward =
       reinterpret_cast<ForwardPass<TConfig>*>(backward_u8.get());
 
-#if 0
+#if 1
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
                  forward->layers[0].input.data(), kModelDim);
 #endif
@@ -2099,6 +2109,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   float loss = CrossEntropyLoss<kVocabSize>(forward->logits.data(), prompt,
                                             context_size, pool);
 
+#if 0
   LossGradient<kVocabSize>(forward->logits.data(), prompt, context_size,
                            backward->logits.data(), pool);
 
@@ -2127,7 +2138,6 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
              *grad.GetLayer(layer), backward->layers[layer], pool);
   }
 
-#if 0
   ImputEmbeddingVJP(weights, prompt, next_layer_grad.data(), grad);
 #endif
 
