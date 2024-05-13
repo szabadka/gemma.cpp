@@ -1890,10 +1890,10 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
         activations.att_post2.data() + pos * kModelDim,
         activations.attention_out.data() + pos * kModelDim, kModelDim);
   }
+#endif
   ApplyRMSNorm(weights.pre_ffw_norm_scale.data(),
                activations.attention_out.data(), kModelDim, num_tokens,
                activations.bf_pre_ffw_rms_out.data(), pool);
-#endif
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kFFHiddenDim * 2, kModelDim>(
@@ -1974,6 +1974,12 @@ void LayerVJP(const Layer<TConfig>& weights,
       forward.bf_pre_ffw_rms_out.data(), backward.ffw_hidden.data(),
       num_tokens, even_odd, grad.gating_einsum_w,
       backward.bf_pre_ffw_rms_out.data(), pool);
+  RMSNormVJP(weights.pre_ffw_norm_scale.data(),
+             forward.attention_out.data(),
+             backward.bf_pre_ffw_rms_out.data(),
+             kModelDim, num_tokens,
+             grad.pre_ffw_norm_scale.data(),
+             backward.attention_out.data(), pool);
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
