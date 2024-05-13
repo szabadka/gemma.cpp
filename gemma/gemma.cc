@@ -1922,16 +1922,13 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     MatVec<kModelDim, kFFHiddenDim>(
         weights.linear_w, 0,
         activations.ffw_hidden_gated.data() + pos * kFFHiddenDim,
-        //even_odd, activations.ffw_out.data() + pos * kModelDim, pool);
-        even_odd, output + pos * kModelDim, pool);
+        even_odd, activations.ffw_out.data() + pos * kModelDim, pool);
   }
-#if 0
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     Add(activations.attention_out.data() + pos * kModelDim,
         activations.ffw_out.data() + pos * kModelDim,
         output + pos * kModelDim, kModelDim);
   }
-#endif
 }
 
 template <typename TConfig>
@@ -1980,6 +1977,9 @@ void LayerVJP(const Layer<TConfig>& weights,
              kModelDim, num_tokens,
              grad.pre_ffw_norm_scale.data(),
              backward.attention_out.data(), pool);
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    AddFrom(next_layer_grad, backward.attention_out.data(), kModelDim);
+  }
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
