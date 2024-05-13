@@ -1900,6 +1900,8 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
         activations.bf_pre_ffw_rms_out.data() + pos * kModelDim, even_odd,
         activations.ffw_hidden.data() + pos * kFFHiddenDim * 2, pool);
   }
+#endif
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
     const float* HWY_RESTRICT out =
@@ -1912,13 +1914,11 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     using VF = hn::Vec<DF>;
     DF df;
     for (size_t i = 0; i < kFFHiddenDim; i += Lanes(df)) {
-      const auto v = Load(df, out + i);
-      const auto mul = Load(df, out_mul + i);
-      hn::Store(hn::Mul(mul, Gelu(df, v)), df, out_gated + i);
+      const auto y = Load(df, out + i);
+      const auto x = Load(df, out_mul + i);
+      hn::Store(hn::Mul(x, Gelu(df, y)), df, out_gated + i);
     }
   }
-#endif
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kModelDim, kFFHiddenDim>(
         weights.linear_w, 0,
@@ -1950,6 +1950,26 @@ void LayerVJP(const Layer<TConfig>& weights,
       weights.linear_w, forward.ffw_hidden_gated.data(), next_layer_grad,
       num_tokens, even_odd, grad.linear_w, backward.ffw_hidden_gated.data(),
       pool);
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t hidden_offset = pos * kFFHiddenDim * 2;
+    const float* HWY_RESTRICT f_out = forward.ffw_hidden.data() + hidden_offset;
+    const float* HWY_RESTRICT f_out_mul = f_out + kFFHiddenDim;
+    const float* HWY_RESTRICT b_out_gated =
+        backward.ffw_hidden_gated.data() + pos * kFFHiddenDim;
+    float* HWY_RESTRICT b_out = backward.ffw_hidden.data() + hidden_offset;
+    float* HWY_RESTRICT b_out_mul = b_out + kFFHiddenDim;
+    namespace hn = hwy::HWY_NAMESPACE;
+    using DF = hn::ScalableTag<float>;
+    using VF = hn::Vec<DF>;
+    DF df;
+    for (size_t i = 0; i < kFFHiddenDim; i += Lanes(df)) {
+      const auto y = Load(df, f_out + i);
+      const auto x = Load(df, f_out_mul + i);
+      const auto v = Load(df, b_out_gated + i);
+      hn::Store(hn::Mul(v, Gelu(df, y)), df, b_out_mul + i);
+      hn::Store(hn::Mul(v, hn::Mul(x, GeluGrad(df, y))), df, b_out + i);
+    }
+  }
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>

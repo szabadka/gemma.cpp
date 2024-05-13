@@ -411,6 +411,25 @@ static HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
   return hn::Mul(v, cdf);
 }
 
+template <class D, HWY_IF_F32_D(D)>
+static HWY_INLINE hn::Vec<D> GeluGrad(D d, hn::Vec<D> v) {
+  const hn::Vec<D> kMul = hn::Set(d, 0.044715f);
+  const hn::Vec<D> kSqrt2OverPi = hn::Set(d, 0.797884560804236f);
+  const hn::Vec<D> kHalf = hn::Set(d, 0.5f);
+  const hn::Vec<D> kOne = hn::Set(d, 1.0f);
+  // kSqrtOverPi*3*kMul
+  const hn::Vec<D> kMulv2 = hn::Set(d, 0.1070322244f);
+
+  const hn::Vec<D> v2 = hn::Mul(v, v);
+  const hn::Vec<D> v3 = hn::Mul(v2, v);
+  const hn::Vec<D> arg = hn::Mul(kSqrt2OverPi, hn::MulAdd(kMul, v3, v));
+  const hn::Vec<D> tanh = hn::Tanh(d, arg);
+  const hn::Vec<D> cdf = hn::MulAdd(kHalf, tanh, kHalf);
+  const hn::Vec<D> dtanh = hn::Sub(kOne, hn::Mul(tanh, tanh));
+  const hn::Vec<D> darg = hn::MulAdd(kMulv2, v2, kSqrt2OverPi);
+  return hn::MulAdd(kHalf, hn::Mul(v, hn::Mul(dtanh, darg)), cdf);
+}
+
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Gelu(float* HWY_RESTRICT x,
                                                size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
