@@ -1781,7 +1781,7 @@ void MatMulVJP(const std::array<float, kRows * kCols>& weights,
 }
 
 template <typename TConfig>
-void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
+void ApplyForwardLayer(const Layer<TConfig>& weights,
                        ForwardLayer<TConfig>& activations,
                        size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
@@ -1794,7 +1794,7 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
-#if 1
+#if 0
   ApplyRMSNorm(weights.pre_attention_norm_scale.data(),
                activations.input.data(), kModelDim, num_tokens,
                activations.pre_att_rms_out.data(), pool);
@@ -1918,14 +1918,15 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
     }
   }
 #endif
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kModelDim, kFFHiddenDim>(
         weights.linear_w, 0,
         activations.ffw_hidden_gated.data() + pos * kFFHiddenDim,
-        even_odd, activations.ffw_out.data() + pos * kModelDim, pool);
-    //even_odd, output + pos * kModelDim, pool);
+        //even_odd, activations.ffw_out.data() + pos * kModelDim, pool);
+        even_odd, output + pos * kModelDim, pool);
   }
-#if 1
+#if 0
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     Add(activations.attention_out.data() + pos * kModelDim,
         activations.ffw_out.data() + pos * kModelDim,
@@ -1941,9 +1942,14 @@ void LayerVJP(const Layer<TConfig>& weights,
               size_t num_tokens,
               float* HWY_RESTRICT even_odd,
               Layer<TConfig>& grad,
-              const ForwardLayer<TConfig>& backward,
+              ForwardLayer<TConfig>& backward,
               hwy::ThreadPool& pool) {
-
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+  MatMulVJP<kFFHiddenDim, kModelDim>(
+      weights.linear_w, forward.ffw_hidden_gated.data(), next_layer_grad,
+      num_tokens, even_odd, grad.linear_w, backward.ffw_hidden_gated.data(),
+      pool);
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
@@ -2024,7 +2030,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   const float kEmbScaling = EmbeddingScaling<TConfig>();
 
   using TWeights = Weights<TConfig>;
-  const auto& weights = *reinterpret_cast<const CompressedWeights<TConfig>*>(weights_u8.get());
+  const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
 
   HWY_DASSERT(context_size > 0);
@@ -2036,9 +2042,10 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   ForwardPass<TConfig>* backward =
       reinterpret_cast<ForwardPass<TConfig>*>(backward_u8.get());
 
-#if 1
+#if 0
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
                  forward->layers[0].input.data(), kModelDim);
+#endif
 
   for (size_t layer = 0; layer < kLayers; ++layer) {
     float* HWY_RESTRICT output = layer + 1 < kLayers ?
@@ -2047,7 +2054,6 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
     ApplyForwardLayer(*weights.GetLayer(layer), forward->layers[layer],
                       num_tokens, forward->even_odd.data(), output, pool);
   }
-#endif
 
   ApplyRMSNorm(weights.final_norm_scale.data(),
                forward->final_layer_output.data(),
@@ -2063,7 +2069,6 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   float loss = CrossEntropyLoss<kVocabSize>(forward->logits.data(), prompt,
                                             context_size, pool);
 
-#if 0
   LossGradient<kVocabSize>(forward->logits.data(), prompt, context_size,
                            backward->logits.data(), pool);
 
@@ -2092,6 +2097,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
              *grad.GetLayer(layer), backward->layers[layer], pool);
   }
 
+#if 0
   ImputEmbeddingVJP(weights, prompt, next_layer_grad.data(), grad);
 #endif
 
