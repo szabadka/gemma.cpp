@@ -1813,7 +1813,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   static constexpr size_t kHeads = TConfig::kHeads;
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
-
+  HWY_ASSERT(num_tokens <= kSeqLen);
 #if 0
   ApplyRMSNorm(weights.pre_attention_norm_scale.data(),
                activations.input.data(), kModelDim, num_tokens,
@@ -1860,7 +1860,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
       float* HWY_RESTRICT k2 =
           activations.kv.data() + pos2 * kHeads * kQKVDim * 2;
       const float score = Dot(q, k2, kQKVDim);
-      head_att[pos2 % kSeqLen] = score;
+      head_att[pos2] = score;
     }
   });
 #endif
@@ -1872,7 +1872,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     float* HWY_RESTRICT head_att = activations.att.data() +
                                    head * kSeqLen +
                                    pos * kHeads * kSeqLen;
-    Softmax(head_att, std::min(pos + 1, kSeqLen));
+    Softmax(head_att, pos + 1);
   });
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
@@ -1888,7 +1888,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
       float* HWY_RESTRICT v2 =
           activations.kv.data() + pos2 * kHeads * kQKVDim * 2 + kQKVDim;
-      MulByConstAndAdd(head_att[pos2 % kSeqLen], v2, att_out, kQKVDim);
+      MulByConstAndAdd(head_att[pos2], v2, att_out, kQKVDim);
     }
   });
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -1959,6 +1959,7 @@ void LayerVJP(const Layer<TConfig>& weights,
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+  HWY_ASSERT(num_tokens <= kSeqLen);
   MatMulVJP<kFFHiddenDim, kModelDim>(
       weights.linear_w, forward.ffw_hidden_gated.data(), next_layer_grad,
       num_tokens, even_odd, grad.linear_w, backward.ffw_hidden_gated.data(),
@@ -2038,7 +2039,7 @@ void LayerVJP(const Layer<TConfig>& weights,
     float* HWY_RESTRICT b_head_att = backward.att.data() +
                                      head * kSeqLen +
                                      pos * kHeads * kSeqLen;
-    SoftmaxVJP(f_head_att, b_head_att, std::min(pos + 1, kSeqLen));
+    SoftmaxVJP(f_head_att, b_head_att, pos + 1);
   });
 }
 
