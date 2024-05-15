@@ -920,13 +920,16 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  auto sum = hn::Zero(d);
   hn::Transform(d, x, mask_pos,
-                [&sum, &vmax](const auto d, const auto value) HWY_ATTR {
+                [&vmax](const auto d, const auto value) HWY_ATTR {
                   const auto out = hn::Exp(d, hn::Sub(value, vmax));
-                  sum = hn::Add(sum, out);
                   return out;
                 });
+
+  auto sum = hn::Zero(d);
+  Foreach(d, x, mask_pos, hn::Zero(d),
+          [&sum](const auto d, const auto value)
+              HWY_ATTR { sum = hn::Add(sum, value); });
 
   // Normalize to probability distribution
   const float mul = 1.0f / hn::ReduceSum(d, sum);
@@ -962,6 +965,21 @@ static HWY_NOINLINE void Softmax(const float* HWY_RESTRICT x,
   // Normalize to probability distribution
   const float mul = 1.0f / hn::ReduceSum(d, sum);
   MulByConst(mul, output, size, mask_pos);
+}
+
+static HWY_NOINLINE void SoftmaxVJP(const float* HWY_RESTRICT forward,
+                                    float* HWY_RESTRICT backward,
+                                    const size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+
+  const auto offset =
+      hn::Set(d, hn::Dot::Compute<0>(d, forward, backward, size));
+  hn::Transform1(
+      d, backward, size, forward,
+      [&offset](const auto d, const auto v, const auto y)
+      HWY_ATTR { return hn::Mul(y, hn::Sub(v, offset)); });
 }
 
 static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,

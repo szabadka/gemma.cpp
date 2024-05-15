@@ -1863,6 +1863,8 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
       head_att[pos2 % kSeqLen] = score;
     }
   });
+#endif
+  const size_t num_tasks = kHeads * num_tokens;
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
@@ -1872,17 +1874,16 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
                                    pos * kHeads * kSeqLen;
     Softmax(head_att, std::min(pos + 1, kSeqLen));
   });
-#endif
-  const size_t num_tasks = kHeads * num_tokens;
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     // Weighted summation
-    float* HWY_RESTRICT head_att = activations.att.data() +
-                                   head * kSeqLen +
-                                   pos * kHeads * kSeqLen;
+    const float* HWY_RESTRICT head_att = activations.att.data() +
+                                         head * kSeqLen +
+                                         pos * kHeads * kSeqLen;
     float* HWY_RESTRICT att_out = activations.att_out.data() + head * kQKVDim +
                                   pos * kHeads * kQKVDim;
+
     hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
       float* HWY_RESTRICT v2 =
@@ -1956,6 +1957,7 @@ void LayerVJP(const Layer<TConfig>& weights,
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   MatMulVJP<kFFHiddenDim, kModelDim>(
       weights.linear_w, forward.ffw_hidden_gated.data(), next_layer_grad,
@@ -2003,6 +2005,7 @@ void LayerVJP(const Layer<TConfig>& weights,
     hwy::ZeroBytes(backward.kv.data() + pos * kHeads * kQKVDim * 2 + kQKVDim,
                    kQKVDim * sizeof(backward.kv[0]));
   }
+  const size_t num_tasks = kHeads * num_tokens;
   for (size_t head = 0; head < kHeads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
       const float* HWY_RESTRICT f_head_att = forward.att.data() +
@@ -2026,6 +2029,17 @@ void LayerVJP(const Layer<TConfig>& weights,
       }
     }
   }
+  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+    const size_t head = task % kHeads;
+    const size_t pos = task / kHeads;
+    const float* HWY_RESTRICT f_head_att = forward.att.data() +
+                                           head * kSeqLen +
+                                           pos * kHeads * kSeqLen;
+    float* HWY_RESTRICT b_head_att = backward.att.data() +
+                                     head * kSeqLen +
+                                     pos * kHeads * kSeqLen;
+    SoftmaxVJP(f_head_att, b_head_att, std::min(pos + 1, kSeqLen));
+  });
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
@@ -2084,6 +2098,8 @@ void LossGradient(const float* HWY_RESTRICT x, const std::vector<int>& prompt,
       continue;  // next token is part of context, don't try to predict it
     }
     const int next_token = prompt[pos + 1];
+    // TODO(szabadka) This requires that kVocabSize is a multiple of the
+    // SIMD lane count.
     Softmax(x + pos * kVocabSize, kVocabSize, kVocabSize,
             grad + pos * kVocabSize);
     grad[pos * kVocabSize + next_token] -= 1.0f;
