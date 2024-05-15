@@ -844,6 +844,7 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t num_tokens, size_t layer,
     });
   }
 
+#if 0
   for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
     // TODO(szabadka) Use a single MatVecAdd like in GriffinRecurrent() after
     // rearranging the weights.
@@ -865,6 +866,16 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t num_tokens, size_t layer,
       AddFrom(head_out, layer_out, kModelDim);
     }
   }
+#else
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    MatVecAdd<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kHeads * kQKVDim>(
+        layer_weights->attn_vec_einsum_w, 0,
+        activations.att_out.data() + pos * kHeads * kQKVDim,
+        layer_weights->attention_output_biases.data(),
+        activations.even_odd.data(),
+        activations.att_post2.data() + pos * kModelDim, pool);
+  }
+#endif
 }
 
 template <size_t kBatchSize, typename LayerT, typename TConfig>
@@ -1801,7 +1812,7 @@ void MatMulVJP(const std::array<float, kRows * kCols>& weights,
 }
 
 template <typename TConfig>
-void ApplyForwardLayer(const Layer<TConfig>& weights,
+void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
                        ForwardLayer<TConfig>& activations,
                        size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
@@ -1814,36 +1825,30 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
   HWY_ASSERT(num_tokens <= kSeqLen);
-#if 0
+#if 1
   ApplyRMSNorm(weights.pre_attention_norm_scale.data(),
                activations.input.data(), kModelDim, num_tokens,
                activations.pre_att_rms_out.data(), pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
-    float* HWY_RESTRICT q = activations.q.data() + pos * kHeads * kQKVDim;
-    MatVec<kHeads * kQKVDim, kModelDim>(
-        weights.qkv_einsum_w, 0, x, even_odd, q, pool);
-  }
-  for (size_t pos = 0; pos < num_tokens; ++pos) {
-    float* x = activations.pre_att_rms_out.data() + pos * kModelDim;
-    float* HWY_RESTRICT kv = activations.kv.data() + pos * kHeads * kQKVDim * 2;
-    MatVec<kQKVDim * 2, kModelDim>(weights.qkv_einsum_w,
-                                   kHeads * kQKVDim * kModelDim, x,
-                                   even_odd, kv, pool);
+    MatVec<(kHeads + 2) * kQKVDim, kModelDim>(
+        weights.qkv_einsum_w, 0,
+        activations.pre_att_rms_out.data() + pos * kModelDim, even_odd,
+        activations.qkv.data() + pos * (kHeads + 2) * kQKVDim, pool);
   }
 #endif
   const size_t num_tasks = kHeads * num_tokens;
-#if 0
+#if 1
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    float* HWY_RESTRICT kv = activations.kv.data() + pos * kHeads * kQKVDim * 2;
-    Rope(kv, kQKVDim, pos);
+    float* HWY_RESTRICT k =
+        activations.qkv.data() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
+    Rope(k, kQKVDim, pos);
   }
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     float* HWY_RESTRICT q =
-        activations.q.data() + (pos * kHeads + head) * kQKVDim;
+        activations.qkv.data() + (pos * (kHeads + 2) + head) * kQKVDim;
     Rope(q, kQKVDim, pos);
     MulByConst(kQueryScale, q, kQKVDim);
   });
@@ -1852,13 +1857,13 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     const float* HWY_RESTRICT q =
-        activations.q.data() + (pos * kHeads + head) * kQKVDim;
+        activations.qkv.data() + (pos * (kHeads + 2) + head) * kQKVDim;
     float* HWY_RESTRICT head_att = activations.att.data() +
                                    head * kSeqLen +
                                    pos * kHeads * kSeqLen;
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
       const float* HWY_RESTRICT k2 =
-          activations.kv.data() + pos2 * kHeads * kQKVDim * 2;
+          activations.qkv.data() + (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
       const float score = Dot(q, k2, kQKVDim);
       head_att[pos2] = score;
     }
@@ -1885,7 +1890,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
       float* HWY_RESTRICT v2 =
-          activations.kv.data() + pos2 * kHeads * kQKVDim * 2 + kQKVDim;
+          activations.qkv.data() + (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
       MulByConstAndAdd(head_att[pos2], v2, att_out, kQKVDim);
     }
   });
@@ -1893,10 +1898,10 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     MatVec<kModelDim, kHeads * kQKVDim>(
         weights.attn_vec_einsum_w, 0,
         activations.att_out.data() + pos * kHeads * kQKVDim, even_odd,
-        //activations.att_post2.data() + pos * kModelDim, pool);
-        activations.attention_out.data() + pos * kModelDim, pool);
+        activations.att_post2.data() + pos * kModelDim, pool);
+    //activations.attention_out.data() + pos * kModelDim, pool);
   }
-#if 0
+#if 1
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     Add(activations.input.data() + pos * kModelDim,
         activations.att_post2.data() + pos * kModelDim,
@@ -2003,8 +2008,8 @@ void LayerVJP(const Layer<TConfig>& weights,
         backward.attention_out.data(), num_tokens, even_odd,
         grad.attn_vec_einsum_w, backward.att_out.data(), pool);
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    hwy::ZeroBytes(backward.kv.data() + pos * kHeads * kQKVDim * 2 + kQKVDim,
-                   kQKVDim * sizeof(backward.kv[0]));
+    hwy::ZeroBytes(backward.qkv.data() + (pos * (kHeads + 2) + kHeads + 1) * kQKVDim,
+                   kQKVDim * sizeof(backward.qkv[0]));
   }
   const size_t num_tasks = kHeads * num_tokens;
   for (size_t head = 0; head < kHeads; ++head) {
@@ -2020,12 +2025,12 @@ void LayerVJP(const Layer<TConfig>& weights,
                                        pos * kHeads * kSeqLen;
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
         const float* HWY_RESTRICT f_v2 =
-            forward.kv.data() + pos2 * kHeads * kQKVDim * 2 + kQKVDim;
+            forward.qkv.data() + (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
         b_head_att[pos2] = Dot(b_att_out, f_v2, kQKVDim);
       }
       for (size_t pos2 = pos; pos2 < num_tokens; ++pos2) {
         float* HWY_RESTRICT b_v2 =
-            backward.kv.data() + pos2 * kHeads * kQKVDim * 2 + kQKVDim;
+            backward.qkv.data() + (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
         MulByConstAndAdd(f_head_att[pos2], b_att_out, b_v2, kQKVDim);
       }
     }
@@ -2044,39 +2049,39 @@ void LayerVJP(const Layer<TConfig>& weights,
   });
 #endif
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    hwy::ZeroBytes(backward.kv.data() + pos * kHeads * kQKVDim * 2,
-                   kQKVDim * sizeof(backward.kv[0]));
+    hwy::ZeroBytes(backward.qkv.data() + (pos * (kHeads + 2) + kHeads) * kQKVDim,
+                   kQKVDim * sizeof(backward.qkv[0]));
     for (size_t head = 0; head < kHeads; ++head) {
-      hwy::ZeroBytes(backward.q.data() + (pos * kHeads + head) * kQKVDim,
+      hwy::ZeroBytes(backward.qkv.data() + (pos * (kHeads + 2) + head) * kQKVDim,
                      kQKVDim * sizeof(backward.q[0]));
     }
   }
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
-    const size_t qoffs = (pos * kHeads + head) * kQKVDim;
+    const size_t qoffs = (pos * (kHeads + 2) + head) * kQKVDim;
     const size_t aoffs = head * kSeqLen + pos * kHeads * kSeqLen;
-    const float* HWY_RESTRICT f_q = forward.q.data() + qoffs;
+    const float* HWY_RESTRICT f_q = forward.qkv.data() + qoffs;
     const float* HWY_RESTRICT b_head_att = backward.att.data() + aoffs;
-    float* HWY_RESTRICT b_q = backward.q.data() + qoffs;
+    float* HWY_RESTRICT b_q = backward.qkv.data() + qoffs;
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-      const size_t k2offs = pos2 * kHeads * kQKVDim * 2;
-      const float* HWY_RESTRICT f_k2 = forward.kv.data() + k2offs;
-      float* HWY_RESTRICT b_k2 = backward.kv.data() + k2offs;
+      const size_t k2offs = (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
+      const float* HWY_RESTRICT f_k2 = forward.qkv.data() + k2offs;
+      float* HWY_RESTRICT b_k2 = backward.qkv.data() + k2offs;
       MulByConstAndAdd(b_head_att[pos2], f_k2, b_q, kQKVDim);
       MulByConstAndAdd(b_head_att[pos2], f_q, b_k2, kQKVDim);
     }
   });
 #if 0
   for (int pos = 0; pos < num_tokens; ++pos) {
-    float* HWY_RESTRICT b_kv = backward.kv.data() + pos * kHeads * kQKVDim * 2;
+    float* HWY_RESTRICT b_kv = backward.qkv.data() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
     Rope(b_kv, kQKVDim, -pos);
   }
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const int pos = task / kHeads;
     float* HWY_RESTRICT b_q =
-        backward.q.data() + (pos * kHeads + head) * kQKVDim;
+        backward.qkv.data() + (pos * (kHeads + 2) + head) * kQKVDim;
     MulByConst(kQueryScale, b_q, kQKVDim);
     Rope(b_q, kQKVDim, -pos);
   });
@@ -2163,7 +2168,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   const float kEmbScaling = EmbeddingScaling<TConfig>();
 
   using TWeights = Weights<TConfig>;
-  const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
+  const auto& weights = *reinterpret_cast<const CompressedWeights<TConfig>*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
 
   HWY_DASSERT(context_size > 0);
@@ -2175,7 +2180,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   ForwardPass<TConfig>* backward =
       reinterpret_cast<ForwardPass<TConfig>*>(backward_u8.get());
 
-#if 0
+#if 1
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
                  forward->layers[0].input.data(), kModelDim);
 #endif
@@ -2202,6 +2207,7 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   float loss = CrossEntropyLoss<kVocabSize>(forward->logits.data(), prompt,
                                             context_size, pool);
 
+#if 0
   LossGradient<kVocabSize>(forward->logits.data(), prompt, context_size,
                            backward->logits.data(), pool);
 
@@ -2230,7 +2236,6 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
              *grad.GetLayer(layer), backward->layers[layer], pool);
   }
 
-#if 0
   ImputEmbeddingVJP(weights, prompt, next_layer_grad.data(), grad);
 #endif
 

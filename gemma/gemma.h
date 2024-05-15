@@ -135,8 +135,7 @@ struct ForwardLayer {
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   std::array<float, kSeqLen * kModelDim> input;
   std::array<float, kSeqLen * kModelDim> pre_att_rms_out;
-  std::array<float, kSeqLen * kHeads * kQKVDim> q;
-  std::array<float, kSeqLen * kHeads * kQKVDim * 2> kv;
+  std::array<float, kSeqLen * (kHeads + 2) * kQKVDim> qkv;
   std::array<float, kSeqLen * kHeads * kSeqLen> att;
   std::array<float, kSeqLen * kHeads * kQKVDim> att_out;
   std::array<float, kSeqLen * kHeads * kModelDim> att_post1;
