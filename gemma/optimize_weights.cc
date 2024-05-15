@@ -149,7 +149,7 @@ void Run(Args& args) {
       reinterpret_cast<ForwardPass<ConfigGemmaTiny>*>(backward.get());
 
   InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
-  RandInit(ftiny->layers[0].att, gen);
+  RandInit(ftiny->layers[0].q, gen);
   RandInit(ftiny->layers[0].kv, gen);
 
   printf("Initial weights:\n");
@@ -165,7 +165,7 @@ void Run(Args& args) {
   for (; steps < 10000; ++steps) {
     InitWeights(args.model_type, grad, InitMode::ZERO_INIT, pool);
     float total_loss = 0.0f;
-    ZeroInit(btiny->layers[0].att);
+    ZeroInit(btiny->layers[0].q);
     ZeroInit(btiny->layers[0].kv);
     for (size_t i = 0; i < kBatchSize; ++i) {
       LogPrompt(prompt);
@@ -180,8 +180,8 @@ void Run(Args& args) {
 
     const float scale = -learning_rate / kBatchSize;
     UpdateWeights(args.model_type, grad, scale, weights, pool);
-    Update(btiny->layers[0].att, scale,
-           ftiny->layers[0].att);
+    Update(btiny->layers[0].q, scale,
+           ftiny->layers[0].q);
     Update(btiny->layers[0].kv, scale,
            ftiny->layers[0].kv);
     printf("total_loss: %f\n", total_loss);

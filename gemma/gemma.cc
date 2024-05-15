@@ -1846,29 +1846,26 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     Rope(q, kQKVDim, pos);
     MulByConst(kQueryScale, q, kQKVDim);
   });
-  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
-    const size_t head = task % kHeads;
-    const size_t pos = task / kHeads;
-    float* HWY_RESTRICT q =
-        activations.q.data() + (pos * kHeads + head) * kQKVDim;
-    // Calculate scores
-    float* HWY_RESTRICT head_att = activations.att.data() +
-                                   head * kSeqLen +
-                                   pos * kHeads * kSeqLen;
-    // Compute Q dot K scores
-    for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-      float* HWY_RESTRICT k2 =
-          activations.kv.data() + pos2 * kHeads * kQKVDim * 2;
-      const float score = Dot(q, k2, kQKVDim);
-      head_att[pos2] = score;
-    }
-  });
 #endif
   const size_t num_tasks = kHeads * num_tokens;
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
-    // Calculate scores
+    const float* HWY_RESTRICT q =
+        activations.q.data() + (pos * kHeads + head) * kQKVDim;
+    float* HWY_RESTRICT head_att = activations.att.data() +
+                                   head * kSeqLen +
+                                   pos * kHeads * kSeqLen;
+    for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
+      const float* HWY_RESTRICT k2 =
+          activations.kv.data() + pos2 * kHeads * kQKVDim * 2;
+      const float score = Dot(q, k2, kQKVDim);
+      head_att[pos2] = score;
+    }
+  });
+  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+    const size_t head = task % kHeads;
+    const size_t pos = task / kHeads;
     float* HWY_RESTRICT head_att = activations.att.data() +
                                    head * kSeqLen +
                                    pos * kHeads * kSeqLen;
@@ -1877,7 +1874,6 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
-    // Weighted summation
     const float* HWY_RESTRICT head_att = activations.att.data() +
                                          head * kSeqLen +
                                          pos * kHeads * kSeqLen;
@@ -2040,6 +2036,30 @@ void LayerVJP(const Layer<TConfig>& weights,
                                      head * kSeqLen +
                                      pos * kHeads * kSeqLen;
     SoftmaxVJP(f_head_att, b_head_att, pos + 1);
+  });
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    hwy::ZeroBytes(backward.kv.data() + pos * kHeads * kQKVDim * 2,
+                   kQKVDim * sizeof(backward.kv[0]));
+    for (size_t head = 0; head < kHeads; ++head) {
+      hwy::ZeroBytes(backward.q.data() + (pos * kHeads + head) * kQKVDim,
+                     kQKVDim * sizeof(backward.q[0]));
+    }
+  }
+  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+    const size_t head = task % kHeads;
+    const size_t pos = task / kHeads;
+    const size_t qoffs = (pos * kHeads + head) * kQKVDim;
+    const size_t aoffs = head * kSeqLen + pos * kHeads * kSeqLen;
+    const float* HWY_RESTRICT f_q = forward.q.data() + qoffs;
+    const float* HWY_RESTRICT b_head_att = backward.att.data() + aoffs;
+    float* HWY_RESTRICT b_q = backward.q.data() + qoffs;
+    for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
+      const size_t k2offs = pos2 * kHeads * kQKVDim * 2;
+      const float* HWY_RESTRICT f_k2 = forward.kv.data() + k2offs;
+      float* HWY_RESTRICT b_k2 = backward.kv.data() + k2offs;
+      MulByConstAndAdd(b_head_att[pos2], f_k2, b_q, kQKVDim);
+      MulByConstAndAdd(b_head_att[pos2], f_q, b_k2, kQKVDim);
+    }
   });
 }
 

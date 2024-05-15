@@ -576,8 +576,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED float Dot(const float* HWY_RESTRICT a,
                                                const float* HWY_RESTRICT b,
                                                size_t size) {
   const hn::ScalableTag<float> d;
-  HWY_DASSERT(size >= hn::Lanes(d));
-  HWY_DASSERT(size % hn::Lanes(d) == 0);
+  HWY_ASSERT(size >= hn::Lanes(d));
+  HWY_ASSERT(size % hn::Lanes(d) == 0);
   constexpr int kAssumptions =
       hn::Dot::kAtLeastOneVector | hn::Dot::kMultipleOfVector;
   return hn::Dot::Compute<kAssumptions>(d, a, b, size);
