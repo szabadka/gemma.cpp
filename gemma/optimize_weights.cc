@@ -156,12 +156,13 @@ void Run(Args& args) {
   LogWeightStats(args.model_type, weights);
 
   constexpr size_t kBatchSize = 1;
-  float learning_rate = 0.1f;
+  float learning_rate = 0.01f;
 
   ReverseSequenceSampler training_task(10);
   std::vector<int> prompt;
   size_t context_size = training_task.Sample(gen, prompt);
   size_t steps = 0;
+  float prev_loss = std::numeric_limits<float>::max();
   for (; steps < 10000; ++steps) {
     InitWeights(args.model_type, grad, InitMode::ZERO_INIT, pool);
     float total_loss = 0.0f;
@@ -184,10 +185,14 @@ void Run(Args& args) {
            ftiny->layers[0].q);
     Update(btiny->layers[0].kv, scale,
            ftiny->layers[0].kv);
-    printf("total_loss: %f\n", total_loss);
+    printf("total_loss: %.15f\n", total_loss);
+    if (total_loss >= prev_loss) {
+      exit(1);
+    }
     if (total_loss < 0.01f) {
       break;
     }
+    prev_loss = total_loss;
   }
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");

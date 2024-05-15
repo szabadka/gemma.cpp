@@ -1832,12 +1832,13 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
                                    kHeads * kQKVDim * kModelDim, x,
                                    even_odd, kv, pool);
   }
+#endif
+  const size_t num_tasks = kHeads * num_tokens;
+#if 0
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     float* HWY_RESTRICT kv = activations.kv.data() + pos * kHeads * kQKVDim * 2;
     Rope(kv, kQKVDim, pos);
   }
-
-  const size_t num_tasks = kHeads * num_tokens;
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
@@ -1847,7 +1848,6 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
     MulByConst(kQueryScale, q, kQKVDim);
   });
 #endif
-  const size_t num_tasks = kHeads * num_tokens;
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
@@ -1863,6 +1863,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
       head_att[pos2] = score;
     }
   });
+#if 1
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
@@ -1871,6 +1872,7 @@ void ApplyForwardLayer(const Layer<TConfig>& weights,
                                    pos * kHeads * kSeqLen;
     Softmax(head_att, pos + 1);
   });
+#endif
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
@@ -1955,6 +1957,8 @@ void LayerVJP(const Layer<TConfig>& weights,
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+  static const float kQueryScale =
+      static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
   HWY_ASSERT(num_tokens <= kSeqLen);
   MatMulVJP<kFFHiddenDim, kModelDim>(
       weights.linear_w, forward.ffw_hidden_gated.data(), next_layer_grad,
@@ -2026,6 +2030,7 @@ void LayerVJP(const Layer<TConfig>& weights,
       }
     }
   }
+#if 1
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
@@ -2037,6 +2042,7 @@ void LayerVJP(const Layer<TConfig>& weights,
                                      pos * kHeads * kSeqLen;
     SoftmaxVJP(f_head_att, b_head_att, pos + 1);
   });
+#endif
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     hwy::ZeroBytes(backward.kv.data() + pos * kHeads * kQKVDim * 2,
                    kQKVDim * sizeof(backward.kv[0]));
@@ -2061,6 +2067,20 @@ void LayerVJP(const Layer<TConfig>& weights,
       MulByConstAndAdd(b_head_att[pos2], f_q, b_k2, kQKVDim);
     }
   });
+#if 0
+  for (int pos = 0; pos < num_tokens; ++pos) {
+    float* HWY_RESTRICT b_kv = backward.kv.data() + pos * kHeads * kQKVDim * 2;
+    Rope(b_kv, kQKVDim, -pos);
+  }
+  pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
+    const size_t head = task % kHeads;
+    const int pos = task / kHeads;
+    float* HWY_RESTRICT b_q =
+        backward.q.data() + (pos * kHeads + head) * kQKVDim;
+    MulByConst(kQueryScale, b_q, kQKVDim);
+    Rope(b_q, kQKVDim, -pos);
+  });
+#endif
 }
 
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>

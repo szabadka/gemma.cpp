@@ -758,7 +758,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(float* HWY_RESTRICT x,
-                                               size_t dim_qkv, size_t pos) {
+                                               size_t dim_qkv, int pos) {
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
   for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
@@ -779,7 +779,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(float* HWY_RESTRICT x,
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(const float mul,
                                                        float* HWY_RESTRICT x,
                                                        size_t dim_qkv,
-                                                       size_t pos) {
+                                                       int pos) {
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
   for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
@@ -967,9 +967,28 @@ static HWY_NOINLINE void Softmax(const float* HWY_RESTRICT x,
   MulByConst(mul, output, size, mask_pos);
 }
 
+static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,
+                                                const size_t size) {
+#if 0
+  Softmax(x, size, size);
+#else
+  float sum = 0.0;
+  float maxval = *std::max_element(x, x + size);
+  for (size_t i = 0; i < size; ++i) {
+    x[i] = std::exp(x[i] - maxval);
+    sum += x[i];
+  }
+  float scale = 1.0f / sum;
+  for (size_t i = 0; i < size; ++i) {
+    x[i] *= scale;
+  }
+#endif
+}
+
 static HWY_NOINLINE void SoftmaxVJP(const float* HWY_RESTRICT forward,
                                     float* HWY_RESTRICT backward,
                                     const size_t size) {
+#if 1
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const D d;
@@ -980,11 +999,15 @@ static HWY_NOINLINE void SoftmaxVJP(const float* HWY_RESTRICT forward,
       d, backward, size, forward,
       [&offset](const auto d, const auto v, const auto y)
       HWY_ATTR { return hn::Mul(y, hn::Sub(v, offset)); });
-}
-
-static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,
-                                                const size_t size) {
-  Softmax(x, size, size);
+#else
+  float sum = 0.0;
+  for (size_t i = 0; i < size; ++i) {
+    sum += forward[i] * backward[i];
+  }
+  for (size_t i = 0; i < size; ++i) {
+    backward[i] = forward[i] * (backward[i] - sum);
+  }
+#endif
 }
 
 static HWY_NOINLINE void LogitsSoftCap(const float cap,
