@@ -50,6 +50,7 @@ set(SOURCES
   gemma/gemma.cc
   gemma/gemma.h
   gemma/ops.h
+  gemma/weights.h
   util/app.h
   util/args.h
   )
@@ -103,6 +104,7 @@ if (GEMMA_ENABLE_TESTS)
 set(GEMMA_TEST_FILES
   gemma/ops_test.cc
   gemma/gemma_test.cc
+  gemma/gradient_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)

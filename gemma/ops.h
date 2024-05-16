@@ -877,11 +877,9 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
   MulByConstAndAdd(c, x, out, size, size);
 }
 
-static HWY_NOINLINE float SoftmaxCrossEntropy(
-    const float* HWY_RESTRICT x, const size_t size, const size_t idx) {
+static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size) {
   HWY_DASSERT(size != 0);
-  HWY_DASSERT(idx < size);
-
+#if 1
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const D d;
@@ -894,101 +892,29 @@ static HWY_NOINLINE float SoftmaxCrossEntropy(
   vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  auto vsum = hn::Zero(d);
-  for (size_t i = 0; i < size; i += hn::Lanes(d)) {
-    vsum = hn::Add(vsum, hn::Exp(d, hn::Sub(hn::Load(d, x + i), vmax)));
-  }
-  float sum = hn::ReduceSum(d, vsum);
-  float maxval = hn::GetLane(vmax);
-  return (maxval - x[idx] + std::log(sum)) / std::log(2.0);
-}
-
-static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
-                                 const size_t mask_pos) {
-  HWY_DASSERT(size != 0);
-  HWY_DASSERT(mask_pos <= size);
-
-  namespace hn = hwy::HWY_NAMESPACE;
-  using D = hn::ScalableTag<float>;
-  const D d;
-
-  const auto vmin = hn::Set(d, hwy::LowestValue<float>());
-  auto vmax = vmin;
-  Foreach(d, x, mask_pos, vmin,
-          [&vmax](const auto d, const auto value)
-              HWY_ATTR { vmax = hn::Max(vmax, value); });
-  vmax = hn::MaxOfLanes(d, vmax);
-#if 1
-  // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  hn::Transform(d, x, mask_pos,
+  hn::Transform(d, x, size,
                 [&vmax](const auto d, const auto value) HWY_ATTR {
                   const auto out = hn::Exp(d, hn::Sub(value, vmax));
                   return out;
                 });
 
   auto sum = hn::Zero(d);
-  Foreach(d, x, mask_pos, hn::Zero(d),
+  Foreach(d, x, size, hn::Zero(d),
           [&sum](const auto d, const auto value)
               HWY_ATTR { sum = hn::Add(sum, value); });
-#else
-  // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  auto sum = hn::Zero(d);
-  hn::Transform(d, x, mask_pos,
-                [&sum, &vmax](const auto d, const auto value) HWY_ATTR {
-                  const auto out = hn::Exp(d, hn::Sub(value, vmax));
-                  sum = hn::Add(sum, out);
-                  return out;
-                });
-#endif
-  // Normalize to probability distribution
-  const float mul = 1.0f / hn::ReduceSum(d, sum);
-  MulByConst(mul, x, size, mask_pos);
-}
-
-static HWY_NOINLINE void Softmax(const float* HWY_RESTRICT x,
-                                 const size_t size,
-                                 const size_t mask_pos,
-                                 float* HWY_RESTRICT output) {
-  HWY_DASSERT(size != 0);
-  HWY_DASSERT(mask_pos <= size);
-
-  namespace hn = hwy::HWY_NAMESPACE;
-  using D = hn::ScalableTag<float>;
-  const D d;
-
-  const auto vmin = hn::Set(d, hwy::LowestValue<float>());
-  auto vmax = vmin;
-  Foreach(d, x, mask_pos, vmin,
-          [&vmax](const auto d, const auto value)
-              HWY_ATTR { vmax = hn::Max(vmax, value); });
-  vmax = hn::MaxOfLanes(d, vmax);
-
-  // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  auto sum = hn::Zero(d);
-  for (size_t i = 0; i < size; i += hn::Lanes(d)) {
-    const auto out = hn::Exp(d, hn::Sub(Load(d, x + i), vmax));
-    sum = hn::Add(sum, out);
-    hn::Store(out, d, output + i);
-  }
 
   // Normalize to probability distribution
   const float mul = 1.0f / hn::ReduceSum(d, sum);
-  MulByConst(mul, output, size, mask_pos);
-}
-
-static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,
-                                                const size_t size) {
-#if 1
-  Softmax(x, size, size);
+  MulByConst(mul, x, size);
 #else
   float sum = 0.0;
-  float maxval = *std::max_element(x, x + size);
-  for (size_t i = 0; i < size; ++i) {
+  float maxval = *std::max_element(x, x + mask_pos);
+  for (size_t i = 0; i < mask_pos; ++i) {
     x[i] = std::exp(x[i] - maxval);
     sum += x[i];
   }
   float scale = 1.0f / sum;
-  for (size_t i = 0; i < size; ++i) {
+  for (size_t i = 0; i < mask_pos; ++i) {
     x[i] *= scale;
   }
 #endif
@@ -1017,6 +943,54 @@ static HWY_NOINLINE void SoftmaxVJP(const float* HWY_RESTRICT forward,
     backward[i] = forward[i] * (backward[i] - sum);
   }
 #endif
+}
+
+static HWY_NOINLINE float SoftmaxCrossEntropyLoss(
+    const float* HWY_RESTRICT x, const size_t size, const size_t idx) {
+  HWY_DASSERT(size != 0);
+  HWY_DASSERT(idx < size);
+#if 1
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+
+  const auto vmin = hn::Set(d, hwy::LowestValue<float>());
+  auto vmax = vmin;
+  Foreach(d, x, size, vmin,
+          [&vmax](const auto d, const auto value)
+              HWY_ATTR { vmax = hn::Max(vmax, value); });
+  vmax = hn::MaxOfLanes(d, vmax);
+
+  // Subtract max (avoid precision loss for large exponents) and exponentiate.
+  auto vsum = hn::Zero(d);
+  Foreach(d, x, size, vmin,
+          [&vsum, &vmax](const auto d, const auto value) HWY_ATTR {
+            vsum = hn::Add(vsum, hn::Exp(d, hn::Sub(value, vmax)));
+          });
+
+  const float maxval = hn::GetLane(vmax);
+  const float sum = hn::ReduceSum(d, vsum);
+  const float scale = 1.0 / std::log(2.0);
+  return (maxval - x[idx] + std::log(sum)) * scale;
+#else
+  float maxval = *std::max_element(x, x + size);
+  float sum = 0.0;
+  for (size_t i = 0; i < size; ++i) {
+    sum += std::exp(x[i] - maxval);
+  }
+  const float scale = 1.0 / std::log(2.0);
+  return (maxval - x[idx] + std::log(sum)) * scale;
+#endif
+}
+
+static HWY_NOINLINE void SoftmaxCrossEntropyLossGrad(
+    const float* HWY_RESTRICT x, const size_t size, const size_t idx,
+    float* HWY_RESTRICT grad) {
+  memcpy(grad, x, size * sizeof(x[0]));
+  Softmax(grad, size);
+  grad[idx] -= 1.0;
+  const float scale = 1.0 / std::log(2.0);
+  MulByConst(scale, grad, size);
 }
 
 static HWY_NOINLINE void LogitsSoftCap(const float cap,
@@ -1057,6 +1031,37 @@ static HWY_NOINLINE void SoftCapGrad(const float cap,
   for (size_t i = 0; i < size; i += hn::Lanes(d)) {
     const auto scaled = hn::Mul(hn::Load(d, out + i), vinv_cap);
     hn::Store(hn::Sub(one, hn::Mul(scaled, scaled)), d, grad + i);
+  }
+}
+
+template<size_t kVocabSize>
+float CrossEntropyLoss(const float* HWY_RESTRICT x,
+                       const std::vector<int>& prompt,
+                       size_t context_size,
+                       hwy::ThreadPool& pool) {
+  float loss = 0.0f;
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+    if (pos + 1 < context_size) {
+      continue;  // next token is part of context, don't try to predict it
+    }
+    const int next_token = prompt[pos + 1];
+    loss += SoftmaxCrossEntropyLoss(x + pos * kVocabSize, kVocabSize,
+                                    next_token);
+  }
+  return loss;
+}
+
+template<size_t kVocabSize>
+void LossGradient(const float* HWY_RESTRICT x, const std::vector<int>& prompt,
+                  size_t context_size, float* HWY_RESTRICT grad,
+                  hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+    if (pos + 1 < context_size) {
+      continue;  // next token is part of context, don't try to predict it
+    }
+    const int next_token = prompt[pos + 1];
+    SoftmaxCrossEntropyLossGrad(x + pos * kVocabSize, kVocabSize, next_token,
+                                grad + pos * kVocabSize);
   }
 }
 

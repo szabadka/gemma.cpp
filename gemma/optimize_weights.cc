@@ -168,7 +168,9 @@ void Run(Args& args) {
     //ZeroInit(btiny->layers[0].input);
     for (size_t i = 0; i < kBatchSize; ++i) {
       LogPrompt(prompt);
-      total_loss += CrossEntropyLossWithGradUpdate(
+      total_loss += CrossEntropyLossForwardStep(
+          prompt, context_size, args.model_type, weights, forward, pool);
+      CrossEntropyLossBackwardStep(
           prompt, context_size, args.model_type, weights, forward, grad,
           backward, pool);
     }

@@ -192,9 +192,14 @@ void InitWeights(Model model, WeightStorageT& weights,
 void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
                    WeightStorageT& weights, hwy::ThreadPool& pool);
 
-float CrossEntropyLossWithGradUpdate(
+float CrossEntropyLossForwardStep(
     const std::vector<int>& prompt, size_t context_size, const Model& model,
     const WeightStorageT& weights, WeightStorageT& forward,
+    hwy::ThreadPool& pool);
+
+void CrossEntropyLossBackwardStep(
+    const std::vector<int>& prompt, size_t context_size, const Model& model,
+    const WeightStorageT& weights, const WeightStorageT& forward,
     WeightStorageT& grad, WeightStorageT& backward, hwy::ThreadPool& pool);
 
 constexpr int EOS_ID = 1;

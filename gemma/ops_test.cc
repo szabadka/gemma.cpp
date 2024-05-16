@@ -309,7 +309,7 @@ struct TestSoftmax {
     }
 
     SourceSoftmax(e, count, count);
-    Softmax(x, count, count);
+    Softmax(x, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -589,6 +589,44 @@ void TestSigmoid() {
   }
 }
 
+void TestLossGradient() {
+  static const size_t kVocabSize = 8;
+  static const size_t kSeqLen = 8;
+  hwy::ThreadPool pool(8);
+  std::vector<int> prompt = { 0, 1, 2, 3, 4 };
+  const size_t context_size = 1;
+  const size_t num_tokens = prompt.size() - 1;
+  std::array<float, kSeqLen * kVocabSize> logits;
+  std::mt19937 gen(42);
+  std::normal_distribution<float> dist(0.0f, 1.0f);
+  for (size_t i = 0; i < num_tokens * kVocabSize; ++i) {
+    logits[i] = dist(gen);
+  }
+  std::array<float, kSeqLen * kVocabSize> grad;
+  LossGradient<kVocabSize>(logits.data(), prompt, context_size, grad.data(),
+                           pool);
+
+  static constexpr float kStep = 1e-2;
+  static constexpr float kStepScale = 0.5f / kStep;
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    for (size_t i = 0; i < kVocabSize; ++i) {
+      size_t idx = pos * kVocabSize + i;
+      const float x0 = logits[idx];
+      logits[i] = x0 + kStep;
+      float loss1 = CrossEntropyLoss<kVocabSize>(
+          logits.data(), prompt, context_size, pool);
+      logits[i] = x0 - kStep;
+      float loss2 = CrossEntropyLoss<kVocabSize>(
+          logits.data(), prompt, context_size, pool);
+      const float exp_grad = (loss1 - loss2) * kStepScale;
+      ASSERT_NEAR(grad[idx], exp_grad, 1e-2)
+        << "Cross entropy loss gradient index " << idx
+        << " expected " << exp_grad << " [loss1 = " << loss1
+        << " loss2 = " << loss2 << "] actual " << grad[idx];
+    }
+  }
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -609,6 +647,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoOfsMatVecAddLoop);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSigmoid);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestLossGradient);
 #ifdef HWY_AFTER_TEST
 HWY_AFTER_TEST();
 #endif
