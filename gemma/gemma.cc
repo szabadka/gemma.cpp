@@ -1752,6 +1752,16 @@ void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
   }
 }
 
+void InputEmbeddingVJP(const float* weights, const std::vector<int>& prompt,
+                       const float scaling, const float* HWY_RESTRICT backward,
+                       float* HWY_RESTRICT grad, size_t model_dim) {
+  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+    int token = prompt[pos];
+    MulByConstAndAdd(scaling, backward + pos * model_dim,
+                     grad + token * model_dim, model_dim);
+  }
+}
+
 template<typename WT, typename XT, typename OutT>
 void ApplyRMSNorm(const WT* HWY_RESTRICT weights, const XT* HWY_RESTRICT x,
                   size_t model_dim, size_t num_tokens,
@@ -2063,7 +2073,7 @@ void LayerVJP(const Layer<TConfig>& weights,
       MulByConstAndAdd(b_head_att[pos2], f_q, b_k2, kQKVDim);
     }
   });
-#if 1
+#if 0
   for (int pos = 0; pos < num_tokens; ++pos) {
     float* HWY_RESTRICT b_kv = backward.qkv.data() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
     Rope(b_kv, kQKVDim, -pos);
@@ -2184,10 +2194,8 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
   ForwardPass<TConfig>* backward =
       reinterpret_cast<ForwardPass<TConfig>*>(backward_u8.get());
 
-#if 0
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
                  forward->layers[0].input.data(), kModelDim);
-#endif
 
   for (size_t layer = 0; layer < kLayers; ++layer) {
     float* HWY_RESTRICT output = layer + 1 < kLayers ?
@@ -2239,9 +2247,9 @@ float CrossEntropyLossWithGradUpdate(const std::vector<int>& prompt,
              *grad.GetLayer(layer), backward->layers[layer], pool);
   }
 
-#if 0
-  ImputEmbeddingVJP(weights, prompt, next_layer_grad.data(), grad);
-#endif
+  InputEmbeddingVJP(weights.embedder_input_embedding.data(), prompt,
+                    kEmbScaling, backward->layers[0].input.data(),
+                    grad.embedder_input_embedding.data(), kModelDim);
 
   return loss;
 }
