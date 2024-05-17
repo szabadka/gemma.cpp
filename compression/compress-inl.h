@@ -99,8 +99,8 @@ struct CompressTraits<float> {
                               const MatT* HWY_RESTRICT in, size_t in_ofs,
                               const VecT* HWY_RESTRICT vec_aligned,
                               size_t num) {
-    HWY_DASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
-    HWY_DASSERT(hn::IsAligned(df, vec_aligned));
+    HWY_ASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
+    HWY_ASSERT(hn::IsAligned(df, vec_aligned));
     constexpr int kAssumptions =
         hn::Dot::kAtLeastOneVector | hn::Dot::kMultipleOfVector;
     // vec_aligned must be the second argument because hn::Dot supports f32*bf16

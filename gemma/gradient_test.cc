@@ -28,6 +28,8 @@
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "gemma/gemma.h"
+#include "gemma/weights.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -45,19 +47,69 @@ namespace HWY_NAMESPACE {
 
 namespace hn = hwy::HWY_NAMESPACE;
 
+template<size_t kLen>
+void RandInit(std::array<float, kLen>& x, float stddev, std::mt19937& gen) {
+  std::normal_distribution<float> dist(0.0f, stddev);
+  for (size_t i = 0; i < kLen; ++i) {
+    x[i] = dist(gen);
+  }
+}
+
+template<size_t kLen>
+void ZeroInit(std::array<float, kLen>& x) {
+  for (size_t i = 0; i < kLen; ++i) {
+    x[i] = 0.0f;
+  }
+}
+
+static constexpr float kDefaultEpsilon = 1.0 / (1 << 20);
+
+template<typename T>
+void TestGradient(const float* grad, size_t dim, float* x, T func, int line,
+                  const float f_epsilon = kDefaultEpsilon) {
+  const float h = std::pow(f_epsilon, 1.0 / 3.0);
+  const float max_err = std::max<float>(
+      1e-5, 2.0 * f_epsilon * std::abs(func()) / h);
+  for (size_t i = 0; i < dim; ++i) {
+    const float x0 = x[i];
+    volatile float x1 = x[i] + h;
+    volatile float x2 = x[i] - h;
+    x[i] = x1;
+    const double f1 = func();
+    x[i] = x2;
+    const double f2 = func();
+    x[i] = x0;
+    const double diff = f1 - f2;
+    const double exp_grad = diff / (x1 - x2);
+    ASSERT_NEAR(exp_grad, grad[i], max_err)
+          << "line: " << line << " dim=" << dim << " i=" << i
+          << " f1=" << f1 << " f2=" << f2;
+  }
+}
+
+template<size_t N, typename T>
+void TestGradient(const std::array<float, N>& grad, std::array<float, N>& x,
+                  T func, int line, float max_err = kDefaultEpsilon) {
+  TestGradient(grad.data(), N, x.data(), func, line, max_err);
+}
+
+
 void TestSoftmaxCrossEntropyLossGrad() {
   static const size_t kMaxVocabSize = 64;
   HWY_ALIGN float logits[kMaxVocabSize];
   HWY_ALIGN float grad[kMaxVocabSize];
   std::mt19937 gen(42);
-  std::normal_distribution<float> dist(0.0f, 5.0f);
+  std::normal_distribution<float> dist(0.0f, 50.0f);
   for (size_t vocab_size = 2; vocab_size <= kMaxVocabSize; vocab_size *= 2) {
+    auto func = [&]() HWY_ATTR {
+      return SoftmaxCrossEntropyLoss(logits, vocab_size, 0);
+    };
     for (size_t iter = 0; iter < 10; ++iter) {
       memset(logits, 0, vocab_size * sizeof(logits[0]));
       if (iter == 0) {
-        logits[0] = 5.0f;
+        logits[0] = 30.0f;
       } else if (iter == 1) {
-        logits[1] = 5.0f;
+        logits[1] = 30.0f;
       } else {
         for (size_t i = 0; i < vocab_size; ++i) {
           logits[i] = dist(gen);
@@ -67,24 +119,7 @@ void TestSoftmaxCrossEntropyLossGrad() {
         logits[i] = dist(gen);
       }
       SoftmaxCrossEntropyLossGrad(logits, vocab_size, 0, grad);
-      static constexpr double kStep = 0.5e-3;
-      static constexpr double kStepScale = 0.5f / kStep;
-      for (size_t i = 0; i < vocab_size; ++i) {
-        const float x0 = logits[i];
-        logits[i] = x0 + kStep;
-        double loss1 = SoftmaxCrossEntropyLoss(logits, vocab_size, 0);
-        logits[i] = x0 - kStep;
-        double loss2 = SoftmaxCrossEntropyLoss(logits, vocab_size, 0);
-        const double diff = loss1 - loss2;
-        const double exp_grad = diff * kStepScale;
-        ASSERT_GE(grad[i] * exp_grad, 0.0)
-            << "vocab_size=" << vocab_size << " iter=" << iter << " idx=" << i
-            << " loss1=" << loss1 << " loss2=" << loss2 << " diff=" << diff
-            << " exp_grad=" << exp_grad << " grad=" << grad[i];
-        ASSERT_NEAR(grad[i], exp_grad, 5e-3)
-            << "vocab_size=" << vocab_size << " iter=" << iter << " idx=" << i
-            << " loss1=" << loss1 << " loss2=" << loss2 << " diff=" << diff;
-      }
+      TestGradient(grad, vocab_size, logits, func, __LINE__);
     }
   }
 }
@@ -97,36 +132,56 @@ void TestLossGradient() {
   const size_t context_size = 1;
   const size_t num_tokens = prompt.size() - 1;
   HWY_ALIGN float logits[kSeqLen * kVocabSize];
+  auto func = [&]() HWY_ATTR {
+    return CrossEntropyLoss<kVocabSize>(logits, prompt, context_size, pool);
+  };
   std::mt19937 gen(42);
-  std::normal_distribution<float> dist(0.0f, 1.0f);
+  std::normal_distribution<float> dist(0.0f, 50.0f);
   for (size_t i = 0; i < num_tokens * kVocabSize; ++i) {
     logits[i] = dist(gen);
   }
   HWY_ALIGN float grad[kSeqLen * kVocabSize];
   LossGradient<kVocabSize>(logits, prompt, context_size, grad, pool);
-
-  static constexpr float kStep = 0.5e-3;
-  static constexpr float kStepScale = 0.5f / kStep;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    for (size_t i = 0; i < kVocabSize; ++i) {
-      size_t idx = pos * kVocabSize + i;
-      const float x0 = logits[idx];
-      logits[idx] = x0 + kStep;
-      float loss1 = CrossEntropyLoss<kVocabSize>(
-          logits, prompt, context_size, pool);
-      logits[idx] = x0 - kStep;
-      float loss2 = CrossEntropyLoss<kVocabSize>(
-          logits, prompt, context_size, pool);
-      const float diff = loss1 - loss2;
-      const float exp_grad = diff * kStepScale;
-      ASSERT_NEAR(grad[idx], exp_grad, 5e-3)
-          << "idx=" << idx << " loss1=" << loss1 << " loss2=" << loss2
-          << " diff=" << diff;
+    TestGradient(&grad[pos * kVocabSize], kVocabSize, &logits[pos * kVocabSize],
+                 func, __LINE__);
+  }
+}
+
+void TestMatMulVJP() {
+  static const size_t kRows = 8;
+  static const size_t kCols = 16;
+  static const size_t kTokens = 5;
+  hwy::ThreadPool pool(8);
+  std::mt19937 gen(42);
+  HWY_ALIGN std::array<float, kRows * kCols> weights;
+  HWY_ALIGN std::array<float, kTokens * kCols> x;
+  HWY_ALIGN std::array<float, kTokens * kRows> y;
+  HWY_ALIGN std::array<float, kRows * kCols> grad;
+  HWY_ALIGN std::array<float, kTokens * kCols> dx;
+  HWY_ALIGN std::array<float, kTokens * kRows> dy;
+
+  RandInit(weights, 1.0f, gen);
+  RandInit(x, 1.0f, gen);
+  for (size_t t = 0; t < kTokens; ++t) {
+    for (size_t r = 0; r < kRows; ++r) {
+      auto func = [&]() HWY_ATTR {
+        MatVec<kRows, kCols>(weights, 0, &x[t * kCols], nullptr, &y[t * kRows],
+                             pool);
+        return y[t * kRows + r];
+      };
+      ZeroInit(dy);
+      dy[t * kRows + r] = 1.0;
+      ZeroInit(grad);
+      MatMulVJP<kCols, kRows>(weights, x.data(), dy.data(), kTokens, nullptr,
+                              grad, dx.data(), pool);
+      TestGradient(dx, x, func, __LINE__);
+      TestGradient(grad, weights, func, __LINE__);
     }
   }
 }
 
-#if 0
+#if 1
 void TestEndToEnd() {
   hwy::ThreadPool pool(8);
   std::mt19937 gen(42);
@@ -140,64 +195,67 @@ void TestEndToEnd() {
   using TWeights = Weights<TConfig>;
   auto& weights = *reinterpret_cast<TWeights*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
+  auto& forward = *reinterpret_cast<ForwardPass<TConfig>*>(forward_u8.get());
+  auto& backward = *reinterpret_cast<ForwardPass<TConfig>*>(backward_u8.get());
+  static constexpr size_t kModelDim = TConfig::kModelDim;
 
-  InitWeights(model, weights_u8, InitMode::RAND_INIT, pool, &gen);
   std::vector<int> prompt = { 0, 1, 2, 3, 4 };
   const size_t context_size = 1;
-  float loss = CrossEntropyLossForwardStep(
-      prompt, context_size, model, weights_u8, forward_u8, pool);
-  printf("loss = %f\n", loss);
+  const size_t num_tokens = prompt.size() - 1;
+  const size_t xdim = num_tokens * kModelDim;
 
+  auto func = [&]() HWY_ATTR {
+    return CrossEntropyLossForwardStep(
+        prompt, context_size, model, weights_u8, forward_u8, pool);
+  };
+
+  //RandInit(forward.layers[0].input, 10.0f, gen);
+  RandInit(forward.layers[0].att_out, 10.0f, gen);
+  //RandInit(forward.layers[0].attention_out, 10.0f, gen);
+  //RandInit(forward.final_layer_output, 1.0f, gen);
+  //RandInit(forward.final_norm_output, 1.0f, gen);
+  //RandInit(forward.raw_logits, 50.0f, gen);
+  InitWeights(model, weights_u8, InitMode::RAND_INIT, pool, &gen);
+  CrossEntropyLossForwardStep(
+      prompt, context_size, model, weights_u8, forward_u8, pool);
+
+  //ZeroInit(backward.layers[0].input);
+  ZeroInit(backward.layers[0].att_out);
+  //ZeroInit(backward.layers[0].attention_out);
+  //ZeroInit(backward.final_layer_output);
+  //ZeroInit(backward.final_norm_output);
+  //ZeroInit(backward.raw_logits);
   InitWeights(model, grad_u8, InitMode::ZERO_INIT, pool);
   CrossEntropyLossBackwardStep(
       prompt, context_size, model, weights_u8, forward_u8, grad_u8,
       backward_u8, pool);
 
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-
-  static constexpr float kStep = 1e-2;
-  static constexpr float kStepScale = 0.5f / kStep;
-#if 0
-  for (size_t j = 0; j < kVocabSize; ++j) {
-    for (size_t i = 0; i < kModelDim; ++i) {
-      const float* g = grad.embedder_input_embedding.data();
-      float* w = weights.embedder_input_embedding.data();
-      const size_t idx = j * kVocabSize + i;
-      const float w0 = w[idx];
-      w[idx] = w0 + kStep;
-      float loss1 = CrossEntropyLossForwardStep(
-          prompt, context_size, model, weights_u8, forward_u8, pool);
-      w[idx] = w0 - kStep;
-      float loss2 = CrossEntropyLossForwardStep(
-          prompt, context_size, model, weights_u8, forward_u8, pool);
-      const float exp_grad = (loss1 - loss2) * kStepScale;
-      const float rel_diff = std::abs((g[idx] - exp_grad) / exp_grad);
-      ASSERT_LT(rel_diff, 1e-5)
-          << "Embedding gradient token " << j << " index " << i
-          << " expected " << exp_grad << " [loss1 = " << loss1
-          << " loss2 = " << loss2 << "] actual " << g[idx];
-    }
-  }
-#endif
-
-  for (size_t i = 0; i < kModelDim; ++i) {
-    const float* g = grad.final_norm_scale.data();
-    float* w = weights.final_norm_scale.data();
-    const float w0 = w[i];
-    w[i] = w0 + kStep;
-    float loss1 = CrossEntropyLossForwardStep(
-        prompt, context_size, model, weights_u8, forward_u8, pool);
-    w[i] = w0 - kStep;
-    float loss2 = CrossEntropyLossForwardStep(
-        prompt, context_size, model, weights_u8, forward_u8, pool);
-    const float exp_grad = (loss1 - loss2) * kStepScale;
-    //const float rel_diff = std::abs((g[i] - exp_grad) / exp_grad);
-    ASSERT_NEAR(g[i], exp_grad, 1e-2)
-        << "Final norm scale gradient index " << i
-        << " expected " << exp_grad << " [loss1 = " << loss1
-        << " loss2 = " << loss2 << "] actual " << g[i];
-  }
+  //TestGradient(grad.final_norm_scale.data(), kModelDim,
+  //             weights.final_norm_scale.data(), func, __LINE__);
+  //TestGradient(backward.raw_logits.data(), backward.raw_logits.size(),
+  //             forward.raw_logits.data(), func, __LINE__);
+  //TestGradient(backward.final_norm_output.data(), xdim,
+  //             forward.final_norm_output.data(), func, __LINE__);
+  //TestGradient(backward.final_layer_output.data(), xdim,
+  //             forward.final_layer_output.data(), func, __LINE__);
+  //TestGradient(grad.embedder_input_embedding,
+  //             weights.embedder_input_embedding, func, __LINE__);
+  TestGradient(grad.final_norm_scale,
+               weights.final_norm_scale, func, __LINE__);
+  TestGradient(grad.GetLayer(0)->linear_w,
+               weights.GetLayer(0)->linear_w, func, __LINE__);
+  TestGradient(grad.GetLayer(0)->gating_einsum_w,
+               weights.GetLayer(0)->gating_einsum_w, func, __LINE__);
+  TestGradient(grad.GetLayer(0)->pre_ffw_norm_scale,
+               weights.GetLayer(0)->pre_ffw_norm_scale, func, __LINE__);
+  //TestGradient(backward.layers[0].attention_out,
+  //             forward.layers[0].attention_out, func, __LINE__);
+  TestGradient(grad.GetLayer(0)->attn_vec_einsum_w,
+               weights.GetLayer(0)->attn_vec_einsum_w, func, __LINE__);
+  TestGradient(backward.layers[0].att_out,
+               forward.layers[0].att_out, func, __LINE__);
+  //TestGradient(backward.layers[0].input,
+  //             forward.layers[0].input, func, __LINE__);
 }
 #endif
 
@@ -212,6 +270,8 @@ namespace gcpp {
 HWY_BEFORE_TEST(GradientTest);
 HWY_EXPORT_AND_TEST_P(GradientTest, TestSoftmaxCrossEntropyLossGrad);
 HWY_EXPORT_AND_TEST_P(GradientTest, TestLossGradient);
+HWY_EXPORT_AND_TEST_P(GradientTest, TestMatMulVJP);
+//HWY_EXPORT_AND_TEST_P(GradientTest, TestEndToEnd);
 #ifdef HWY_AFTER_TEST
 HWY_AFTER_TEST();
 #endif

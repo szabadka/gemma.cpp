@@ -1065,6 +1065,29 @@ void LossGradient(const float* HWY_RESTRICT x, const std::vector<int>& prompt,
   }
 }
 
+template <size_t kCols, size_t kRows>
+void MatMulVJP(const std::array<float, kRows * kCols>& weights,
+               const float* HWY_RESTRICT x,  // num_tokens * kCols
+               const float* HWY_RESTRICT v,  // num_tokens * kRows
+               size_t num_tokens, float* HWY_RESTRICT even_odd,
+               std::array<float, kRows * kCols>& grad_w,
+               float* HWY_RESTRICT grad_x,  // num_tokens * kCols
+               hwy::ThreadPool& pool) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t voffs = pos * kRows;
+    const size_t xoffs = pos * kCols;
+    for (size_t j = 0; j < kRows; ++j) {
+      MulByConstAndAdd(v[voffs + j], &x[xoffs], &grad_w[j * kCols], kCols);
+    }
+    // &grad_x[xoffs] = &v[voffs] * weights (row vec * matrix)
+    memset(&grad_x[xoffs], 0, kCols * sizeof(grad_x[0]));
+    for (size_t j = 0; j < kRows; ++j) {
+      MulByConstAndAdd(v[voffs + j], &weights[j * kCols], &grad_x[xoffs],
+                       kCols);
+    }
+  }
+}
+
 static HWY_NOINLINE HWY_MAYBE_UNUSED size_t
 SampleArgmax(const float* probabilities, size_t vocab_size) {
   size_t max_index = 0;
