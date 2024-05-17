@@ -121,6 +121,11 @@ foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
 
   gtest_discover_tests(${TESTNAME})
 endforeach ()
+
+add_executable(backprop_test gemma/backprop_test.cc gemma/backprop_scalar.h)
+target_include_directories(backprop_test PRIVATE .)
+target_link_libraries(backprop_test PRIVATE GTest::gtest_main)
+
 endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
