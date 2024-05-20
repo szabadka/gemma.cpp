@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <complex>
+#include <vector>
 
 namespace gcpp {
 
@@ -66,7 +67,11 @@ void MatMulVJP(const T* w, const T* x, const T* dy, T* dw, T* dx,
 
 template<typename T>
 T SquaredL2(const T* x, size_t N) {
-  return Dot(x, x, N);
+  T sum = {};
+  for (size_t i = 0; i < N; ++i) {
+    sum += x[i] * x[i];
+  }
+  return sum;
 }
 
 template<typename T>
@@ -101,6 +106,60 @@ void RMSNormVJP(const T* w, const T* x, const T* dy, T* dw, T* dx,
     for (size_t j = 0; j < N; ++j) {
       dx[i * N + j] = ss * (1.0 + w[j]) * dy[i* N + j] - tmp * x[i * N + j];
     }
+  }
+}
+
+template<typename T>
+void Softmax(const T* x, T* out, size_t N) {
+  T sum = {};
+  auto maxreal = std::real(x[0]);
+  for (size_t i = 1; i < N; ++i) {
+    if (std::real(x[i]) > maxreal) {
+      maxreal = std::real(x[i]);
+    }
+  }
+  for (size_t i = 0; i < N; ++i) {
+    out[i] = std::exp(x[i] - maxreal);
+    sum += out[i];
+  }
+  T scale = T(1.0) / sum;
+  for (size_t i = 0; i < N; ++i) {
+    out[i] *= scale;
+  }
+}
+
+template<typename T>
+void SoftmaxVJP(const T* x, const T* dy, T* dx, size_t N) {
+  std::vector<T> y(N);
+  Softmax(x, &y[0], N);
+  T sum = {};
+  for (size_t i = 0; i < N; ++i) {
+    sum += y[i] * dy[i];
+  }
+  for (size_t i = 0; i < N; ++i) {
+    dx[i] = y[i] * (dy[i] - sum);
+  }
+}
+
+
+template<typename T>
+void Softcap(const T* x, T* out, size_t N) {
+  T cap = 30.0;
+  T inv_cap = 1.0 / cap;
+  for (size_t i = 0; i < N; ++i) {
+    out[i] = cap * std::tanh(x[i] * inv_cap);
+  }
+}
+
+template<typename T>
+void SoftcapVJP(const T* x, const T* dy, T* dx, size_t N) {
+  std::vector<T> y(N);
+  Softcap(x, &y[0], N);
+  T cap = 30.0;
+  T inv_cap = 1.0 / cap;
+  for (size_t i = 0; i < N; ++i) {
+    T scaled = y[i] * inv_cap;
+    dx[i] = dy[i] * (1.0 - scaled * scaled);
   }
 }
 

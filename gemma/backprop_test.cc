@@ -58,7 +58,7 @@ void TestGradient(const std::array<T, N>& grad,
     const std::complex<T> f1 = func();
     const T exp_grad = std::imag(f1) * kInvStep;
     x[i] = x0;
-    ASSERT_NEAR(grad[i], exp_grad, std::abs(exp_grad) * 1e-14)
+    ASSERT_NEAR(grad[i], exp_grad, std::max(1e-15, std::abs(exp_grad) * 1e-14))
         << "line: " << line << " dim=" << N << " i=" << i << " f1=" << f1;
   }
 }
@@ -138,6 +138,60 @@ TEST(BackPropTest, RMSNormVJP) {
         TestGradient(dx, c_x, func, __LINE__);
         TestGradient(grad, c_weights, func, __LINE__);
       }
+    }
+  }
+}
+
+TEST(BackPropTest, SoftmaxVJP) {
+  static const size_t N = 64;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, N> x;
+  std::array<T, N> dx;
+  std::array<T, N> dy;
+  std::array<TC, N> c_x;
+  std::array<TC, N> c_y;
+
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(x, 1.0 * (1 << iter), gen);
+    Complexify(x, c_x);
+    for (size_t j = 0; j < N; ++j) {
+      auto func = [&]() {
+        Softmax(c_x.data(), c_y.data(), N);
+        return c_y[j];
+      };
+      ZeroInit(dy);
+      dy[j] = 1.0;
+      SoftmaxVJP(x.data(), dy.data(), dx.data(), N);
+      TestGradient(dx, c_x, func, __LINE__);
+    }
+  }
+}
+
+TEST(BackPropTest, SoftcapVJP) {
+  static const size_t N = 64;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, N> x;
+  std::array<T, N> dx;
+  std::array<T, N> dy;
+  std::array<TC, N> c_x;
+  std::array<TC, N> c_y;
+
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(x, 1.0 * (1 << iter), gen);
+    Complexify(x, c_x);
+    for (size_t j = 0; j < N; ++j) {
+      auto func = [&]() {
+        Softcap(c_x.data(), c_y.data(), N);
+        return c_y[j];
+      };
+      ZeroInit(dy);
+      dy[j] = 1.0;
+      SoftcapVJP(x.data(), dy.data(), dx.data(), N);
+      TestGradient(dx, c_x, func, __LINE__);
     }
   }
 }
