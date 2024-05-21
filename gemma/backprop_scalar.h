@@ -19,11 +19,21 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <iostream>
+#include <cstdio>
+
 #include <cmath>
 #include <complex>
 #include <vector>
 
 namespace gcpp {
+
+template<typename T, size_t N>
+void LogVec(const char* name, const std::array<T, N>& x) {
+  std::cout << name;
+  for (const auto& v : x) std::cout << "  " << v;
+  std::cout << std::endl;
+}
 
 template<typename T>
 T Dot(const T* a, const T* b, size_t N) {
@@ -35,9 +45,9 @@ T Dot(const T* a, const T* b, size_t N) {
 }
 
 template<typename T>
-void MulByConst(T c, const T* x, T* out, size_t N) {
+void MulByConst(T c, T* x, size_t N) {
   for (size_t i = 0; i < N; ++i) {
-    out[i] = c * x[i];
+    x[i] *= c;
   }
 }
 
@@ -291,9 +301,12 @@ void InputEmbeddingVJP(const T* w, const std::vector<int>& prompt, T scaling,
 
 
 template<typename T, typename TConfig>
-void ApplyFowrardLayer(const LayerWeights<T, TConfig>& weights,
+void ApplyForwardLayer(const LayerWeights<T, TConfig>& weights,
                        LayerActivations<T, TConfig>& forward, size_t num_tokens,
                        T* output) {
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  memcpy(output, forward.attn.input.data(),
+         num_tokens * kModelDim * sizeof(output[0]));
 }
 
 template<typename T, typename TConfig>
@@ -301,6 +314,9 @@ void LayerVJP(const LayerWeights<T, TConfig>& weights,
               const LayerActivations<T, TConfig>& forward,  const T* dy,
               LayerWeights<T, TConfig>& grad,
               LayerActivations<T, TConfig>& backward, size_t num_tokens) {
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  memcpy(backward.attn.input.data(), dy,
+         num_tokens * kModelDim * sizeof(dy[0]));
 }
 
 template<typename T>
@@ -312,16 +328,16 @@ T CrossEntropyLoss(const T* x, const std::vector<int>& prompt,
       continue;  // next token is part of context, don't try to predict it
     }
     const int next_token = prompt[i + 1];
-    loss += std::log(x[next_token]);
+    loss += std::log(x[i * V + next_token]);
   }
-  T scaling = 1.0 / std::log(2.0);
+  T scaling = -1.0 / std::log(2.0);
   return loss * scaling;
 }
 
 template<typename T>
 void CrossEntropyLossGrad(const T* x, T* dx, const std::vector<int>& prompt,
                           size_t context_size, size_t V) {
-  T scaling = 1.0 / std::log(2.0);
+  T scaling = -1.0 / std::log(2.0);
   size_t num_tokens = prompt.size() - 1;
   memset(dx, 0, V * num_tokens * sizeof(x[0]));
   for (size_t i = 0; i + 1 < prompt.size(); ++i) {
@@ -329,15 +345,15 @@ void CrossEntropyLossGrad(const T* x, T* dx, const std::vector<int>& prompt,
       continue;
     }
     const int next_token = prompt[i + 1];
-    dx[next_token] = scaling / x[next_token];
+    dx[i * V + next_token] = scaling / x[i * V + next_token];
   }
 }
 
 template<typename T, typename TConfig>
-float ForwardPass(const std::vector<int>& prompt,
-                  size_t context_size,
-                  const AllWeights<T, TConfig>& weights,
-                  AllActivations<T, TConfig>& forward) {
+T ForwardPass(const std::vector<int>& prompt,
+              size_t context_size,
+              const AllWeights<T, TConfig>& weights,
+              AllActivations<T, TConfig>& forward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
@@ -368,23 +384,24 @@ float ForwardPass(const std::vector<int>& prompt,
 
   Softmax(forward.logits.data(), forward.probs.data(), kVocabSize, num_tokens);
 
-  return CrossEntropyLoss(forward.probs.data(), prompt, context_size);
+  return CrossEntropyLoss(forward.probs.data(), prompt, context_size,
+                          kVocabSize);
 }
 
 template<typename T, typename TConfig>
-float BackwardPass(const std::vector<int>& prompt,
-                   size_t context_size,
-                   const AllWeights<T, TConfig>& weights,
-                   const AllActivations<T, TConfig>& forward,
-                   AllWeights<T, TConfig>& grad,
-                   AllActivations<T, TConfig>& backward) {
+void BackwardPass(const std::vector<int>& prompt,
+                  size_t context_size,
+                  const AllWeights<T, TConfig>& weights,
+                  const AllActivations<T, TConfig>& forward,
+                  AllWeights<T, TConfig>& grad,
+                  AllActivations<T, TConfig>& backward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
   const size_t num_tokens = prompt.size() - 1;
 
   CrossEntropyLossGrad(forward.probs.data(), backward.probs.data(), prompt,
-                       context_size);
+                       context_size, kVocabSize);
 
   SoftmaxVJP(forward.logits.data(), backward.probs.data(),
              backward.logits.data(), kVocabSize, num_tokens);
@@ -392,10 +409,10 @@ float BackwardPass(const std::vector<int>& prompt,
   SoftcapVJP(forward.raw_logits.data(), backward.logits.data(),
              backward.raw_logits.data(), num_tokens * kVocabSize);
 
-  MatMulVJP(weights.embedder_input_embedding.data()(),
+  MatMulVJP(weights.embedder_input_embedding.data(),
             forward.final_norm_output.data(),
             backward.raw_logits.data(),
-            grad.embedder_input_emdebbing.data(),
+            grad.embedder_input_embedding.data(),
             backward.final_norm_output.data(),
             kVocabSize, kModelDim, num_tokens);
 
@@ -403,7 +420,7 @@ float BackwardPass(const std::vector<int>& prompt,
              forward.final_layer_output.data(),
              backward.final_norm_output.data(),
              grad.final_norm_scale.data(),
-             backward.final_norm_scale.data(), kModelDim, num_tokens);
+             backward.final_layer_output.data(), kModelDim, num_tokens);
 
   for (int layer = static_cast<int>(kLayers) - 1; layer >= 0; --layer) {
     T* next_layer_grad =

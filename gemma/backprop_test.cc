@@ -32,18 +32,24 @@ void RandInit(std::array<T, kLen>& x, T stddev, std::mt19937& gen) {
 }
 
 template<typename T, size_t kLen>
-void ZeroInit(std::array<T, kLen>& x) {
-  for (size_t i = 0; i < kLen; ++i) {
-    x[i] = 0.0;
-  }
-}
-
-template<typename T, size_t kLen>
 void Complexify(const std::array<T, kLen>& x,
                 std::array<std::complex<T>, kLen>& c_x) {
   for (size_t i = 0; i < kLen; ++i) {
     c_x[i] = std::complex<T>(x[i], 0.0);
   }
+}
+
+template<typename T, typename TConfig>
+void RandInit(AllWeights<T, TConfig>& w, std::mt19937& gen) {
+  RandInit(w.embedder_input_embedding, 1.0, gen);
+  RandInit(w.final_norm_scale, 1.0, gen);
+}
+
+template<typename T, typename TConfig>
+void Complexify(const AllWeights<T, TConfig>& w,
+                AllWeights<std::complex<T>, TConfig>& c_w) {
+  Complexify(w.embedder_input_embedding, c_w.embedder_input_embedding);
+  Complexify(w.final_norm_scale, c_w.final_norm_scale);
 }
 
 template<typename T, size_t N, typename FUNC>
@@ -62,7 +68,6 @@ void TestGradient(const std::array<T, N>& grad,
         << "line: " << line << " dim=" << N << " i=" << i << " f1=" << f1;
   }
 }
-
 
 TEST(BackPropTest, MatMulVJP) {
   static const size_t kRows = 2;
@@ -92,9 +97,9 @@ TEST(BackPropTest, MatMulVJP) {
                  kTokens);
           return c_y[t * kRows + r];
         };
-        ZeroInit(dy);
+        memset(&dy, 0, sizeof(dy));
         dy[t * kRows + r] = 1.0;
-        ZeroInit(grad);
+        memset(&grad, 0, sizeof(grad));
         MatMulVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
                   kRows, kCols, kTokens);
         TestGradient(dx, c_x, func, __LINE__);
@@ -130,9 +135,9 @@ TEST(BackPropTest, RMSNormVJP) {
           RMSNorm(c_weights.data(), c_x.data(), c_y.data(), N, K);
           return c_y[i * N + j];
         };
-        ZeroInit(dy);
+        memset(&dy, 0, sizeof(dy));
         dy[i * N + j] = 1.0;
-        ZeroInit(grad);
+        memset(&grad, 0, sizeof(grad));
         RMSNormVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
                    N, K);
         TestGradient(dx, c_x, func, __LINE__);
@@ -161,7 +166,7 @@ TEST(BackPropTest, SoftmaxVJP) {
         Softmax(c_x.data(), c_y.data(), N);
         return c_y[j];
       };
-      ZeroInit(dy);
+      memset(&dy, 0, sizeof(dy));
       dy[j] = 1.0;
       SoftmaxVJP(x.data(), dy.data(), dx.data(), N);
       TestGradient(dx, c_x, func, __LINE__);
@@ -188,12 +193,78 @@ TEST(BackPropTest, SoftcapVJP) {
         Softcap(c_x.data(), c_y.data(), N);
         return c_y[j];
       };
-      ZeroInit(dy);
+      memset(&dy, 0, sizeof(dy));
       dy[j] = 1.0;
       SoftcapVJP(x.data(), dy.data(), dx.data(), N);
       TestGradient(dx, c_x, func, __LINE__);
     }
   }
+}
+
+TEST(BackPropTest, CrossEntropyLossGrad) {
+  static const size_t K = 4;
+  static const size_t V = 64;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, K * V> x;
+  std::array<T, K * V> dx;
+  std::array<TC, K * V> c_x;
+  std::vector<int> prompt = { 0, 1, 2, 3, 0 };
+  size_t context_size = 1;
+
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(x, 1.0 * (1 << iter), gen);
+    Softcap(x.data(), x.data(), V * K);
+    Softmax(x.data(), x.data(), V, K);
+    CrossEntropyLossGrad(x.data(), dx.data(), prompt, context_size, V);
+    Complexify(x, c_x);
+    auto func = [&]() {
+      return CrossEntropyLoss(c_x.data(), prompt, context_size, V);
+    };
+    TestGradient(dx, c_x, func, __LINE__);
+  }
+}
+
+struct TestConfig {
+  static constexpr int kSeqLen = 4;
+  static constexpr int kVocabSize = 4;
+  static constexpr int kModelDim = 8;
+  static constexpr int kHeads = 2;
+  static constexpr int kQKVDim = 5;
+  static constexpr int kFFHiddenDim = 16;
+  static constexpr int kLayers = 1;
+};
+
+TEST(BackPropTest, EndToEnd) {
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  AllWeights<T, TestConfig> weights;
+  AllWeights<T, TestConfig> grad;
+  AllActivations<T, TestConfig> forward;
+  AllActivations<T, TestConfig> backward;
+  AllWeights<TC, TestConfig> c_weights;
+  AllActivations<TC, TestConfig> c_forward;
+  std::vector<int> prompt = { 0, 1, 2, 3, 0 };
+  size_t context_size = 1;
+
+  RandInit(weights, gen);
+  //RandInit(forward.final_layer_output, 1.0, gen);
+  ForwardPass(prompt, context_size, weights, forward);
+  BackwardPass(prompt, context_size, weights, forward, grad, backward);
+
+  Complexify(weights, c_weights);
+  //Complexify(forward.final_layer_output, c_forward.final_layer_output);
+  auto func = [&]() {
+    return ForwardPass(prompt, context_size, c_weights, c_forward);
+  };
+
+  TestGradient(grad.embedder_input_embedding,
+               c_weights.embedder_input_embedding,
+               func,  __LINE__);
+  TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
+               func, __LINE__);
 }
 
 }  // namespace gcpp
