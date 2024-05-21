@@ -299,14 +299,55 @@ void InputEmbeddingVJP(const T* w, const std::vector<int>& prompt, T scaling,
   }
 }
 
+template<typename T, typename TConfig>
+void ApplyAttentionBlock(const AttnWeights<T, TConfig>& weights,
+                         AttnActivations<T, TConfig>& forward,
+                         size_t num_tokens, T* output) {
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  memcpy(output, forward.input.data(),
+         num_tokens * kModelDim * sizeof(output[0]));
+}
 
 template<typename T, typename TConfig>
-void ApplyForwardLayer(const LayerWeights<T, TConfig>& weights,
-                       LayerActivations<T, TConfig>& forward, size_t num_tokens,
-                       T* output) {
+void AttentionBlockVJP(const AttnWeights<T, TConfig>& weights,
+                       const AttnActivations<T, TConfig>& forward,
+                       const T* dy,
+                       AttnWeights<T, TConfig>& grad,
+                       AttnActivations<T, TConfig>& backward,
+                       size_t num_tokens) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
-  memcpy(output, forward.attn.input.data(),
+  memcpy(backward.input.data(), dy,
+         num_tokens * kModelDim * sizeof(dy[0]));
+}
+
+template<typename T, typename TConfig>
+void ApplyFFWBlock(const FFWWeights<T, TConfig>& weights,
+                   FFWActivations<T, TConfig>& forward,
+                   size_t num_tokens, T* output) {
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  memcpy(output, forward.input.data(),
          num_tokens * kModelDim * sizeof(output[0]));
+}
+
+template<typename T, typename TConfig>
+void FFWBlockVJP(const FFWWeights<T, TConfig>& weights,
+                 const FFWActivations<T, TConfig>& forward,
+                 const T* dy,
+                 FFWWeights<T, TConfig>& grad,
+                 FFWActivations<T, TConfig>& backward,
+                 size_t num_tokens) {
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  memcpy(backward.input.data(), dy,
+         num_tokens * kModelDim * sizeof(dy[0]));
+}
+
+template<typename T, typename TConfig>
+void ApplyLayer(const LayerWeights<T, TConfig>& weights,
+                LayerActivations<T, TConfig>& forward, size_t num_tokens,
+                T* output) {
+  ApplyAttentionBlock(weights.attn, forward.attn, num_tokens,
+                      forward.ffw.input.data());
+  ApplyFFWBlock(weights.ffw, forward.ffw, num_tokens, output);
 }
 
 template<typename T, typename TConfig>
@@ -314,9 +355,9 @@ void LayerVJP(const LayerWeights<T, TConfig>& weights,
               const LayerActivations<T, TConfig>& forward,  const T* dy,
               LayerWeights<T, TConfig>& grad,
               LayerActivations<T, TConfig>& backward, size_t num_tokens) {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  memcpy(backward.attn.input.data(), dy,
-         num_tokens * kModelDim * sizeof(dy[0]));
+  FFWBlockVJP(weights.ffw, forward.ffw, dy, grad.ffw, backward.ffw, num_tokens);
+  AttentionBlockVJP(weights.attn, forward.attn, backward.ffw.input.data(),
+                    grad.attn, backward.attn, num_tokens);
 }
 
 template<typename T>
@@ -367,8 +408,8 @@ T ForwardPass(const std::vector<int>& prompt,
     T* output = layer + 1 < kLayers ?
                 forward.layers[layer + 1].attn.input.data() :
                 forward.final_layer_output.data();
-    ApplyForwardLayer(weights.layers[layer], forward.layers[layer],
-                      num_tokens, output);
+    ApplyLayer(weights.layers[layer], forward.layers[layer], num_tokens,
+               output);
   }
 
   RMSNorm(weights.final_norm_scale.data(),

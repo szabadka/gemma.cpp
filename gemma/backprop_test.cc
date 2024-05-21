@@ -250,12 +250,10 @@ TEST(BackPropTest, EndToEnd) {
   size_t context_size = 1;
 
   RandInit(weights, gen);
-  //RandInit(forward.final_layer_output, 1.0, gen);
   ForwardPass(prompt, context_size, weights, forward);
   BackwardPass(prompt, context_size, weights, forward, grad, backward);
 
   Complexify(weights, c_weights);
-  //Complexify(forward.final_layer_output, c_forward.final_layer_output);
   auto func = [&]() {
     return ForwardPass(prompt, context_size, c_weights, c_forward);
   };
