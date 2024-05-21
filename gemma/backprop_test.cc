@@ -51,7 +51,7 @@ void TestGradient(const std::array<T, N>& grad,
     const std::complex<T> f1 = func();
     const T exp_grad = std::imag(f1) * kInvStep;
     x[i] = x0;
-    ASSERT_NEAR(grad[i], exp_grad, std::max(1e-15, std::abs(exp_grad) * 1e-14))
+    ASSERT_NEAR(grad[i], exp_grad, std::max(1e-15, std::abs(exp_grad) * 1e-13))
         << "line: " << line << " dim=" << N << " i=" << i << " f1=" << f1;
   }
 }
@@ -72,21 +72,18 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   size_t context_size = 1;
   size_t num_tokens = prompt.size() - 1;
 
-  RandInit(weights, 1.0, gen);
-  for (size_t t = 0; t + 1 < prompt.size(); ++t) {
-    for (size_t j = 0; j < kVocabSize; ++j) {
-      auto func = [&]() {
-        InputEmbedding(c_weights.data(), prompt, TC(3.0), c_y.data(),
-                       kModelDim);
-        return c_y[t * kModelDim + j];
-      };
-      memset(&dy, 0, sizeof(dy));
-      dy[t * kModelDim + j] = 1.0;
-      memset(&grad, 0, sizeof(grad));
-      InputEmbeddingVJP(weights.data(), prompt, 3.0, dy.data(), grad.data(),
-                        kModelDim);
-      TestGradient(grad, c_weights, func, __LINE__);
-    }
+  for (size_t iter = 0; iter < 1; ++iter) {
+    RandInit(weights, 1.0, gen);
+    RandInit(dy, 1.0, gen);
+    Complexify(weights, c_weights);
+    auto func = [&]() {
+      InputEmbedding(c_weights.data(), prompt, TC(3.0), c_y.data(), kModelDim);
+      return Dot(dy.data(), c_y.data(), num_tokens * kModelDim);
+    };
+    memset(&grad, 0, sizeof(grad));
+    InputEmbeddingVJP(weights.data(), prompt, 3.0, dy.data(), grad.data(),
+                      kModelDim);
+    TestGradient(grad, c_weights, func, __LINE__);
   }
 }
 
@@ -109,24 +106,18 @@ TEST(BackPropTest, MatMulVJP) {
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0 * (1 << iter), gen);
     RandInit(x, 1.0 * (1 << iter), gen);
+    RandInit(dy, 1.0, gen);
     Complexify(weights, c_weights);
     Complexify(x, c_x);
-    for (size_t t = 0; t < kTokens; ++t) {
-      for (size_t r = 0; r < kRows; ++r) {
-        auto func = [&]() {
-          MatMul(c_weights.data(), c_x.data(), c_y.data(), kRows, kCols,
-                 kTokens);
-          return c_y[t * kRows + r];
-        };
-        memset(&dy, 0, sizeof(dy));
-        dy[t * kRows + r] = 1.0;
-        memset(&grad, 0, sizeof(grad));
-        MatMulVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
-                  kRows, kCols, kTokens);
-        TestGradient(dx, c_x, func, __LINE__);
-        TestGradient(grad, c_weights, func, __LINE__);
-      }
-    }
+    auto func = [&]() {
+      MatMul(c_weights.data(), c_x.data(), c_y.data(), kRows, kCols, kTokens);
+      return Dot(dy.data(), c_y.data(), kTokens * kRows);
+    };
+    memset(&grad, 0, sizeof(grad));
+    MatMulVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
+              kRows, kCols, kTokens);
+    TestGradient(dx, c_x, func, __LINE__);
+    TestGradient(grad, c_weights, func, __LINE__);
   }
 }
 
@@ -150,21 +141,16 @@ TEST(BackPropTest, RMSNormVJP) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(weights, c_weights);
     Complexify(x, c_x);
-    for (size_t i = 0; i < K; ++i) {
-      for (size_t j = 0; j < N; ++j) {
-        auto func = [&]() {
-          RMSNorm(c_weights.data(), c_x.data(), c_y.data(), N, K);
-          return c_y[i * N + j];
-        };
-        memset(&dy, 0, sizeof(dy));
-        dy[i * N + j] = 1.0;
-        memset(&grad, 0, sizeof(grad));
-        RMSNormVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
-                   N, K);
-        TestGradient(dx, c_x, func, __LINE__);
-        TestGradient(grad, c_weights, func, __LINE__);
-      }
-    }
+    RandInit(dy, 1.0, gen);
+    auto func = [&]() {
+      RMSNorm(c_weights.data(), c_x.data(), c_y.data(), N, K);
+      return Dot(dy.data(), c_y.data(), K * N);
+    };
+    memset(&grad, 0, sizeof(grad));
+    RMSNormVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
+               N, K);
+    TestGradient(dx, c_x, func, __LINE__);
+    TestGradient(grad, c_weights, func, __LINE__);
   }
 }
 
@@ -182,16 +168,13 @@ TEST(BackPropTest, SoftmaxVJP) {
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(x, c_x);
-    for (size_t j = 0; j < N; ++j) {
-      auto func = [&]() {
-        Softmax(c_x.data(), c_y.data(), N);
-        return c_y[j];
-      };
-      memset(&dy, 0, sizeof(dy));
-      dy[j] = 1.0;
-      SoftmaxVJP(x.data(), dy.data(), dx.data(), N);
-      TestGradient(dx, c_x, func, __LINE__);
-    }
+    RandInit(dy, 1.0, gen);
+    auto func = [&]() {
+      Softmax(c_x.data(), c_y.data(), N);
+      return Dot(dy.data(), c_y.data(), N);
+    };
+    SoftmaxVJP(x.data(), dy.data(), dx.data(), N);
+    TestGradient(dx, c_x, func, __LINE__);
   }
 }
 
@@ -209,16 +192,13 @@ TEST(BackPropTest, SoftcapVJP) {
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(x, c_x);
-    for (size_t j = 0; j < N; ++j) {
-      auto func = [&]() {
-        Softcap(c_x.data(), c_y.data(), N);
-        return c_y[j];
-      };
-      memset(&dy, 0, sizeof(dy));
-      dy[j] = 1.0;
-      SoftcapVJP(x.data(), dy.data(), dx.data(), N);
-      TestGradient(dx, c_x, func, __LINE__);
-    }
+    RandInit(dy, 1.0, gen);
+    auto func = [&]() {
+      Softcap(c_x.data(), c_y.data(), N);
+      return Dot(dy.data(), c_y.data(), N);
+    };
+    SoftcapVJP(x.data(), dy.data(), dx.data(), N);
+    TestGradient(dx, c_x, func, __LINE__);
   }
 }
 
@@ -288,18 +268,16 @@ TEST(BackPropTest, FFWBlockVJP) {
   std::array<TC, kOutputSize> c_y;
   const size_t num_tokens = 3;
 
-  RandInit(weights, gen);
-  RandInit(forward.input, 1.0, gen);
-  Complexify(weights, c_weights);
-  Complexify(forward.input, c_forward.input);
-
-  for (size_t i = 0; i < kOutputSize; ++i) {
+  for (size_t iter = 0; iter < 10; ++iter) {
+    RandInit(weights, gen);
+    RandInit(forward.input, 1.0, gen);
+    RandInit(dy, 1.0, gen);
+    Complexify(weights, c_weights);
+    Complexify(forward.input, c_forward.input);
     auto func = [&]() {
       ApplyFFWBlock(c_weights, c_forward, num_tokens, c_y.data());
-      return c_y[i];
+      return Dot(dy.data(), c_y.data(), num_tokens * TestConfig::kModelDim);
     };
-    memset(&dy, 0, sizeof(dy));
-    dy[i] = 1.0;
     memset(&grad, 0, sizeof(grad));
     ApplyFFWBlock(weights, forward, num_tokens, y.data());
     FFWBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);

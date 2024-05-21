@@ -35,9 +35,9 @@ void LogVec(const char* name, const std::array<T, N>& x) {
   std::cout << std::endl;
 }
 
-template<typename T>
-T Dot(const T* a, const T* b, size_t N) {
-  T sum = {};
+template<typename T, typename U>
+U Dot(const T* a, const U* b, size_t N) {
+  U sum = {};
   for (size_t i = 0; i < N; ++i) {
     sum += a[i] * b[i];
   }
