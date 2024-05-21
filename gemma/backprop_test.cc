@@ -39,19 +39,6 @@ void Complexify(const std::array<T, kLen>& x,
   }
 }
 
-template<typename T, typename TConfig>
-void RandInit(AllWeights<T, TConfig>& w, std::mt19937& gen) {
-  RandInit(w.embedder_input_embedding, 1.0, gen);
-  RandInit(w.final_norm_scale, 1.0, gen);
-}
-
-template<typename T, typename TConfig>
-void Complexify(const AllWeights<T, TConfig>& w,
-                AllWeights<std::complex<T>, TConfig>& c_w) {
-  Complexify(w.embedder_input_embedding, c_w.embedder_input_embedding);
-  Complexify(w.final_norm_scale, c_w.final_norm_scale);
-}
-
 template<typename T, size_t N, typename FUNC>
 void TestGradient(const std::array<T, N>& grad,
                   std::array<std::complex<T>, N>& x, FUNC func, int line) {
@@ -66,6 +53,40 @@ void TestGradient(const std::array<T, N>& grad,
     x[i] = x0;
     ASSERT_NEAR(grad[i], exp_grad, std::max(1e-15, std::abs(exp_grad) * 1e-14))
         << "line: " << line << " dim=" << N << " i=" << i << " f1=" << f1;
+  }
+}
+
+TEST(BackPropTest, InputEmbeddingVJP) {
+  static const size_t kSeqLen = 8;
+  static const size_t kVocabSize = 4;
+  static const size_t kModelDim = 16;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, kVocabSize * kModelDim> weights;
+  std::array<T, kVocabSize * kModelDim> grad;
+  std::array<T, kSeqLen * kModelDim> dy;
+  std::array<TC, kVocabSize * kModelDim> c_weights;
+  std::array<TC, kSeqLen * kModelDim> c_y;
+  std::vector<int> prompt = { 0, 1, 2, 3, 0, 1, 2 };
+  size_t context_size = 1;
+  size_t num_tokens = prompt.size() - 1;
+
+  RandInit(weights, 1.0, gen);
+  for (size_t t = 0; t + 1 < prompt.size(); ++t) {
+    for (size_t j = 0; j < kVocabSize; ++j) {
+      auto func = [&]() {
+        InputEmbedding(c_weights.data(), prompt, TC(3.0), c_y.data(),
+                       kModelDim);
+        return c_y[t * kModelDim + j];
+      };
+      memset(&dy, 0, sizeof(dy));
+      dy[t * kModelDim + j] = 1.0;
+      memset(&grad, 0, sizeof(grad));
+      InputEmbeddingVJP(weights.data(), prompt, 3.0, dy.data(), grad.data(),
+                        kModelDim);
+      TestGradient(grad, c_weights, func, __LINE__);
+    }
   }
 }
 
@@ -235,6 +256,75 @@ struct TestConfig {
   static constexpr int kFFHiddenDim = 16;
   static constexpr int kLayers = 1;
 };
+
+template<typename T, typename TConfig>
+void RandInit(FFWWeights<T, TConfig>& w, std::mt19937& gen) {
+  RandInit(w.pre_ffw_norm_scale, 1.0, gen);
+  RandInit(w.gating_einsum_w, 1.0, gen);
+  RandInit(w.linear_w, 1.0, gen);
+}
+
+template<typename T, typename TConfig>
+void Complexify(const FFWWeights<T, TConfig>& w,
+                FFWWeights<std::complex<T>, TConfig>& c_w) {
+  Complexify(w.pre_ffw_norm_scale, c_w.pre_ffw_norm_scale);
+  Complexify(w.gating_einsum_w, c_w.gating_einsum_w);
+  Complexify(w.linear_w, c_w.linear_w);
+}
+
+TEST(BackPropTest, FFWBlockVJP) {
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  const size_t kOutputSize = TestConfig::kSeqLen * TestConfig::kModelDim;
+  FFWWeights<T, TestConfig> weights;
+  FFWWeights<T, TestConfig> grad;
+  FFWActivations<T, TestConfig> forward;
+  FFWActivations<T, TestConfig> backward;
+  FFWWeights<TC, TestConfig> c_weights;
+  FFWActivations<TC, TestConfig> c_forward;
+  std::array<T, kOutputSize> y;
+  std::array<T, kOutputSize> dy;
+  std::array<TC, kOutputSize> c_y;
+  const size_t num_tokens = 3;
+
+  RandInit(weights, gen);
+  RandInit(forward.input, 1.0, gen);
+  Complexify(weights, c_weights);
+  Complexify(forward.input, c_forward.input);
+
+  for (size_t i = 0; i < kOutputSize; ++i) {
+    auto func = [&]() {
+      ApplyFFWBlock(c_weights, c_forward, num_tokens, c_y.data());
+      return c_y[i];
+    };
+    memset(&dy, 0, sizeof(dy));
+    dy[i] = 1.0;
+    memset(&grad, 0, sizeof(grad));
+    ApplyFFWBlock(weights, forward, num_tokens, y.data());
+    FFWBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
+    TestGradient(backward.input, c_forward.input, func, __LINE__);
+    TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
+                 func, __LINE__);
+    TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
+                 func, __LINE__);
+    TestGradient(grad.linear_w, c_weights.linear_w,
+                 func, __LINE__);
+  }
+}
+
+template<typename T, typename TConfig>
+void RandInit(AllWeights<T, TConfig>& w, std::mt19937& gen) {
+  RandInit(w.embedder_input_embedding, 1.0, gen);
+  RandInit(w.final_norm_scale, 1.0, gen);
+}
+
+template<typename T, typename TConfig>
+void Complexify(const AllWeights<T, TConfig>& w,
+                AllWeights<std::complex<T>, TConfig>& c_w) {
+  Complexify(w.embedder_input_embedding, c_w.embedder_input_embedding);
+  Complexify(w.final_norm_scale, c_w.final_norm_scale);
+}
 
 TEST(BackPropTest, EndToEnd) {
   std::mt19937 gen(42);
