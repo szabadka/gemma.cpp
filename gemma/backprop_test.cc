@@ -58,37 +58,6 @@ void TestGradient(const std::array<T, N>& grad,
   }
 }
 
-TEST(BackPropTest, InputEmbeddingVJP) {
-  static const size_t kSeqLen = 8;
-  static const size_t kVocabSize = 4;
-  static const size_t kModelDim = 16;
-  std::mt19937 gen(42);
-  using T = double;
-  using TC = std::complex<T>;
-  std::array<T, kVocabSize * kModelDim> weights;
-  std::array<T, kVocabSize * kModelDim> grad;
-  std::array<T, kSeqLen * kModelDim> dy;
-  std::array<TC, kVocabSize * kModelDim> c_weights;
-  std::array<TC, kSeqLen * kModelDim> c_y;
-  std::vector<int> prompt = { 0, 1, 2, 3, 0, 1, 2 };
-  size_t context_size = 1;
-  size_t num_tokens = prompt.size() - 1;
-
-  for (size_t iter = 0; iter < 1; ++iter) {
-    RandInit(weights, 1.0, gen);
-    RandInit(dy, 1.0, gen);
-    Complexify(weights, c_weights);
-    auto func = [&]() {
-      InputEmbedding(c_weights.data(), prompt, TC(3.0), c_y.data(), kModelDim);
-      return Dot(dy.data(), c_y.data(), num_tokens * kModelDim);
-    };
-    memset(&grad, 0, sizeof(grad));
-    InputEmbeddingVJP(weights.data(), prompt, 3.0, dy.data(), grad.data(),
-                      kModelDim);
-    TestGradient(grad, c_weights, func, 1e-100, 1e-14, __LINE__);
-  }
-}
-
 TEST(BackPropTest, MatMulVJP) {
   static const size_t kRows = 2;
   static const size_t kCols = 64;
@@ -251,6 +220,37 @@ TEST(BackPropTest, GatedGeluVJP) {
     };
     GatedGeluVJP(x.data(), dy.data(), dx.data(), N, K);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
+  }
+}
+
+TEST(BackPropTest, InputEmbeddingVJP) {
+  static const size_t kSeqLen = 8;
+  static const size_t kVocabSize = 4;
+  static const size_t kModelDim = 16;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, kVocabSize * kModelDim> weights;
+  std::array<T, kVocabSize * kModelDim> grad;
+  std::array<T, kSeqLen * kModelDim> dy;
+  std::array<TC, kVocabSize * kModelDim> c_weights;
+  std::array<TC, kSeqLen * kModelDim> c_y;
+  std::vector<int> prompt = { 0, 1, 2, 3, 0, 1, 2 };
+  size_t context_size = 1;
+  size_t num_tokens = prompt.size() - 1;
+
+  for (size_t iter = 0; iter < 1; ++iter) {
+    RandInit(weights, 1.0, gen);
+    RandInit(dy, 1.0, gen);
+    Complexify(weights, c_weights);
+    auto func = [&]() {
+      InputEmbedding(c_weights.data(), prompt, TC(3.0), c_y.data(), kModelDim);
+      return Dot(dy.data(), c_y.data(), num_tokens * kModelDim);
+    };
+    memset(&grad, 0, sizeof(grad));
+    InputEmbeddingVJP(weights.data(), prompt, 3.0, dy.data(), grad.data(),
+                      kModelDim);
+    TestGradient(grad, c_weights, func, 1e-100, 1e-14, __LINE__);
   }
 }
 
