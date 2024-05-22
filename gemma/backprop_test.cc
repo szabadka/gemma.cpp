@@ -41,7 +41,8 @@ void Complexify(const std::array<T, kLen>& x,
 
 template<typename T, size_t N, typename FUNC>
 void TestGradient(const std::array<T, N>& grad,
-                  std::array<std::complex<T>, N>& x, FUNC func, int line) {
+                  std::array<std::complex<T>, N>& x, FUNC func,
+                  T max_abs_err, T max_rel_error, int line) {
   const T kStep = 1e-50;
   const T kInvStep = 1.0 / kStep;
   for (size_t i = 0; i < N; ++i) {
@@ -51,7 +52,8 @@ void TestGradient(const std::array<T, N>& grad,
     const std::complex<T> f1 = func();
     const T exp_grad = std::imag(f1) * kInvStep;
     x[i] = x0;
-    ASSERT_NEAR(grad[i], exp_grad, std::max(1e-12, std::abs(exp_grad) * 1e-12))
+    ASSERT_NEAR(grad[i], exp_grad,
+                std::max(max_abs_err, std::abs(exp_grad) * max_rel_error))
         << "line: " << line << " dim=" << N << " i=" << i << " f1=" << f1;
   }
 }
@@ -83,7 +85,7 @@ TEST(BackPropTest, InputEmbeddingVJP) {
     memset(&grad, 0, sizeof(grad));
     InputEmbeddingVJP(weights.data(), prompt, 3.0, dy.data(), grad.data(),
                       kModelDim);
-    TestGradient(grad, c_weights, func, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-100, 1e-14, __LINE__);
   }
 }
 
@@ -116,8 +118,8 @@ TEST(BackPropTest, MatMulVJP) {
     memset(&grad, 0, sizeof(grad));
     MatMulVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
               kRows, kCols, kTokens);
-    TestGradient(dx, c_x, func, __LINE__);
-    TestGradient(grad, c_weights, func, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-13,__LINE__);
+    TestGradient(grad, c_weights, func, 1e-15, 1e-13,__LINE__);
   }
 }
 
@@ -149,8 +151,8 @@ TEST(BackPropTest, RMSNormVJP) {
     memset(&grad, 0, sizeof(grad));
     RMSNormVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
                N, K);
-    TestGradient(dx, c_x, func, __LINE__);
-    TestGradient(grad, c_weights, func, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-15, 1e-14, __LINE__);
   }
 }
 
@@ -174,7 +176,7 @@ TEST(BackPropTest, SoftmaxVJP) {
       return Dot(dy.data(), c_y.data(), N);
     };
     SoftmaxVJP(x.data(), dy.data(), dx.data(), N);
-    TestGradient(dx, c_x, func, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
 
@@ -198,7 +200,7 @@ TEST(BackPropTest, SoftcapVJP) {
       return Dot(dy.data(), c_y.data(), N);
     };
     SoftcapVJP(x.data(), dy.data(), dx.data(), N);
-    TestGradient(dx, c_x, func, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
 
@@ -223,7 +225,7 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
     auto func = [&]() {
       return CrossEntropyLoss(c_x.data(), prompt, context_size, V);
     };
-    TestGradient(dx, c_x, func, __LINE__);
+    TestGradient(dx, c_x, func, 1e-100, 1e-15, __LINE__);
   }
 }
 
@@ -248,7 +250,7 @@ TEST(BackPropTest, GatedGeluVJP) {
       return Dot(dy.data(), c_y.data(), N * K);
     };
     GatedGeluVJP(x.data(), dy.data(), dx.data(), N, K);
-    TestGradient(dx, c_x, func, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
 
@@ -306,13 +308,14 @@ TEST(BackPropTest, FFWBlockVJP) {
     memset(&grad, 0, sizeof(grad));
     ApplyFFWBlock(weights, forward, num_tokens, y.data());
     FFWBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, __LINE__);
+    TestGradient(backward.input, c_forward.input, func, 1e-14, 1e-12,
+                 __LINE__);
     TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
-                 func, __LINE__);
+                 func, 1e-12, 1e-12, __LINE__);
     TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
-                 func, __LINE__);
+                 func, 1e-13, 1e-12, __LINE__);
     TestGradient(grad.linear_w, c_weights.linear_w,
-                 func, __LINE__);
+                 func, 1e-14, 1e-12, __LINE__);
   }
 }
 
@@ -363,9 +366,20 @@ TEST(BackPropTest, EndToEnd) {
 
     TestGradient(grad.embedder_input_embedding,
                  c_weights.embedder_input_embedding,
-                 func,  __LINE__);
+                 func,  1e-14, 1e-13, __LINE__);
     TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
-                 func, __LINE__);
+                 func, 1e-15, 1e-13, __LINE__);
+    for (int i = 0; i < TestConfig::kLayers; ++i) {
+      TestGradient(grad.layers[i].ffw.pre_ffw_norm_scale,
+                   c_weights.layers[i].ffw.pre_ffw_norm_scale,
+                   func, 1e-12, 1e-12, __LINE__);
+      TestGradient(grad.layers[i].ffw.gating_einsum_w,
+                   c_weights.layers[i].ffw.gating_einsum_w,
+                   func, 1e-13, 1e-12, __LINE__);
+      TestGradient(grad.layers[i].ffw.linear_w,
+                   c_weights.layers[i].ffw.linear_w,
+                   func, 1e-14, 1e-12, __LINE__);
+    }
   }
 }
 
