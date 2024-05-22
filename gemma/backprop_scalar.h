@@ -59,6 +59,13 @@ void MulByConstAndAdd(T c, const T* x, T* out, size_t N) {
   }
 }
 
+template<typename T>
+void Add(const T* a, const T* b, T* out, size_t N) {
+  for (size_t i = 0; i < N; ++i) {
+    out[i] = a[i] + b[i];
+  }
+}
+
 // w is N x M matrix in row-major order, x is M x K matrix in column-major order
 // y = w * x is N x K matrix in column-major order.
 template<typename T>
@@ -193,6 +200,60 @@ void SoftcapVJP(const T* x, const T* dy, T* dx, size_t N) {
   }
 }
 
+template<typename T>
+T Gelu(T x) {
+  static const T kMul = 0.044715;
+  static const T kSqrt2OverPi = 0.797884560804236;
+
+  const T x3 = x * x * x;
+  const T arg = kSqrt2OverPi * (kMul * x3 + x);
+  const T cdf = 0.5 * (T(1.0) + std::tanh(arg));
+  return x * cdf;
+}
+
+template<typename T>
+T GeluDerivative(T x) {
+  static const T kMul = 0.044715;
+  static const T kSqrt2OverPi = 0.797884560804236;
+  static const T kMul2 = kSqrt2OverPi * T(3.0) * kMul;
+
+  const T x2 = x * x;
+  const T x3 = x2 * x;
+  const T arg = kSqrt2OverPi * (kMul * x3 + x);
+  const T tanh = std::tanh(arg);
+  const T cdf = 0.5 * (T(1.0) + tanh);
+  const T dtanh = T(1.0) - tanh * tanh;
+  const T darg = kMul2 * x2 + kSqrt2OverPi;
+  return 0.5 * x * dtanh * darg + cdf;
+}
+
+template<typename T>
+void GatedGelu(const T* in, T* out, size_t N, size_t K) {
+  for (size_t i = 0; i < K; ++i) {
+    const T* x1 = in + i * 2 * N;
+    const T* x2 = x1 + N;
+    T* y = out + i * N;
+    for (size_t j = 0; j < N; ++j) {
+      y[j] = x2[j] * Gelu(x1[j]);
+    }
+  }
+}
+
+template<typename T>
+void GatedGeluVJP(const T* in, const T* d_out, T* d_in, size_t N, size_t K) {
+  for (size_t i = 0; i < K; ++i) {
+    const T* x1 = in + i * 2 * N;
+    const T* x2 = x1 + N;
+    const T* v = d_out + i * N;
+    T* dx1 = d_in + i * 2 * N;
+    T* dx2 = dx1 + N;
+    for (size_t j = 0; j < N; ++j) {
+      dx1[j] = v[j] * x2[j] * GeluDerivative(x1[j]);
+      dx2[j] = v[j] * Gelu(x1[j]);
+    }
+  }
+}
+
 template <typename T, typename TConfig>
 struct AttnActivations {
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
@@ -322,11 +383,26 @@ void AttentionBlockVJP(const AttnWeights<T, TConfig>& weights,
 
 template<typename T, typename TConfig>
 void ApplyFFWBlock(const FFWWeights<T, TConfig>& weights,
-                   FFWActivations<T, TConfig>& forward,
+                   FFWActivations<T, TConfig>& activations,
                    size_t num_tokens, T* output) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
-  memcpy(output, forward.input.data(),
-         num_tokens * kModelDim * sizeof(output[0]));
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+
+  RMSNorm(weights.pre_ffw_norm_scale.data(), activations.input.data(),
+          activations.bf_pre_ffw_rms_out.data(), kModelDim, num_tokens);
+
+  MatMul(weights.gating_einsum_w.data(), activations.bf_pre_ffw_rms_out.data(),
+         activations.ffw_hidden.data(), kFFHiddenDim * 2, kModelDim,
+         num_tokens);
+
+  GatedGelu(activations.ffw_hidden.data(), activations.ffw_hidden_gated.data(),
+            kFFHiddenDim, num_tokens);
+
+  MatMul(weights.linear_w.data(), activations.ffw_hidden_gated.data(),
+         activations.ffw_out.data(), kModelDim, kFFHiddenDim, num_tokens);
+
+  Add(activations.input.data(), activations.ffw_out.data(), output,
+      num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>
@@ -337,8 +413,26 @@ void FFWBlockVJP(const FFWWeights<T, TConfig>& weights,
                  FFWActivations<T, TConfig>& backward,
                  size_t num_tokens) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
-  memcpy(backward.input.data(), dy,
-         num_tokens * kModelDim * sizeof(dy[0]));
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+
+  MatMulVJP(weights.linear_w.data(), forward.ffw_hidden_gated.data(),
+            dy, grad.linear_w.data(), backward.ffw_hidden_gated.data(),
+            kModelDim, kFFHiddenDim, num_tokens);
+
+  GatedGeluVJP(forward.ffw_hidden.data(), backward.ffw_hidden_gated.data(),
+               backward.ffw_hidden.data(), kFFHiddenDim, num_tokens);
+
+  MatMulVJP(weights.gating_einsum_w.data(), forward.bf_pre_ffw_rms_out.data(),
+            backward.ffw_hidden.data(), grad.gating_einsum_w.data(),
+            backward.bf_pre_ffw_rms_out.data(), kFFHiddenDim * 2, kModelDim,
+            num_tokens);
+
+  RMSNormVJP(weights.pre_ffw_norm_scale.data(), forward.input.data(),
+             backward.bf_pre_ffw_rms_out.data(),
+             grad.pre_ffw_norm_scale.data(), backward.input.data(),
+             kModelDim, num_tokens);
+
+  Add(dy, backward.input.data(), backward.input.data(), num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>

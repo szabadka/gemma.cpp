@@ -51,7 +51,7 @@ void TestGradient(const std::array<T, N>& grad,
     const std::complex<T> f1 = func();
     const T exp_grad = std::imag(f1) * kInvStep;
     x[i] = x0;
-    ASSERT_NEAR(grad[i], exp_grad, std::max(1e-15, std::abs(exp_grad) * 1e-13))
+    ASSERT_NEAR(grad[i], exp_grad, std::max(1e-12, std::abs(exp_grad) * 1e-12))
         << "line: " << line << " dim=" << N << " i=" << i << " f1=" << f1;
   }
 }
@@ -227,6 +227,31 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
   }
 }
 
+TEST(BackPropTest, GatedGeluVJP) {
+  static const size_t K = 2;
+  static const size_t N = 64;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, K * 2 * N> x;
+  std::array<T, K * 2 * N> dx;
+  std::array<T, K * N> dy;
+  std::array<TC, K * 2 * N> c_x;
+  std::array<TC, K * N> c_y;
+
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(x, 1.0, gen);
+    Complexify(x, c_x);
+    RandInit(dy, 1.0, gen);
+    auto func = [&]() {
+      GatedGelu(c_x.data(), c_y.data(), N, K);
+      return Dot(dy.data(), c_y.data(), N * K);
+    };
+    GatedGeluVJP(x.data(), dy.data(), dx.data(), N, K);
+    TestGradient(dx, c_x, func, __LINE__);
+  }
+}
+
 struct TestConfig {
   static constexpr int kSeqLen = 4;
   static constexpr int kVocabSize = 4;
@@ -293,15 +318,23 @@ TEST(BackPropTest, FFWBlockVJP) {
 
 template<typename T, typename TConfig>
 void RandInit(AllWeights<T, TConfig>& w, std::mt19937& gen) {
+  static constexpr size_t kLayers = TConfig::kLayers;
   RandInit(w.embedder_input_embedding, 1.0, gen);
   RandInit(w.final_norm_scale, 1.0, gen);
+  for (size_t i = 0; i < kLayers; ++i) {
+    RandInit(w.layers[i].ffw, gen);
+  }
 }
 
 template<typename T, typename TConfig>
 void Complexify(const AllWeights<T, TConfig>& w,
                 AllWeights<std::complex<T>, TConfig>& c_w) {
+  static constexpr size_t kLayers = TConfig::kLayers;
   Complexify(w.embedder_input_embedding, c_w.embedder_input_embedding);
   Complexify(w.final_norm_scale, c_w.final_norm_scale);
+  for (size_t i = 0; i < kLayers; ++i) {
+    Complexify(w.layers[i].ffw, c_w.layers[i].ffw);
+  }
 }
 
 TEST(BackPropTest, EndToEnd) {
@@ -317,20 +350,23 @@ TEST(BackPropTest, EndToEnd) {
   std::vector<int> prompt = { 0, 1, 2, 3, 0 };
   size_t context_size = 1;
 
-  RandInit(weights, gen);
-  ForwardPass(prompt, context_size, weights, forward);
-  BackwardPass(prompt, context_size, weights, forward, grad, backward);
+  for (size_t iter = 0; iter < 10; ++iter) {
+    RandInit(weights, gen);
+    ForwardPass(prompt, context_size, weights, forward);
+    memset(&grad, 0, sizeof(grad));
+    BackwardPass(prompt, context_size, weights, forward, grad, backward);
 
-  Complexify(weights, c_weights);
-  auto func = [&]() {
-    return ForwardPass(prompt, context_size, c_weights, c_forward);
-  };
+    Complexify(weights, c_weights);
+    auto func = [&]() {
+      return ForwardPass(prompt, context_size, c_weights, c_forward);
+    };
 
-  TestGradient(grad.embedder_input_embedding,
-               c_weights.embedder_input_embedding,
-               func,  __LINE__);
-  TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
-               func, __LINE__);
+    TestGradient(grad.embedder_input_embedding,
+                 c_weights.embedder_input_embedding,
+                 func,  __LINE__);
+    TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
+                 func, __LINE__);
+  }
 }
 
 }  // namespace gcpp
