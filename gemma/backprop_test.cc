@@ -279,6 +279,19 @@ void Complexify(const AttnWeights<T, TConfig>& w,
   Complexify(w.qkv_einsum_w, c_w.qkv_einsum_w);
 }
 
+template<typename T, typename TConfig, typename FUNC>
+void TestGradient(const AttnWeights<T, TConfig>& grad,
+                  AttnWeights<std::complex<T>, TConfig>& c_weights,
+                  FUNC func) {
+  TestGradient(grad.pre_attention_norm_scale,
+               c_weights.pre_attention_norm_scale,
+               func, 1e-12, 1e-12, __LINE__);
+  TestGradient(grad.attn_vec_einsum_w, c_weights.attn_vec_einsum_w,
+               func, 1e-13, 1e-12, __LINE__);
+  TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
+               func, 1e-14, 1e-12, __LINE__);
+}
+
 TEST(BackPropTest, AttnBlockVJP) {
   std::mt19937 gen(42);
   using T = double;
@@ -310,13 +323,7 @@ TEST(BackPropTest, AttnBlockVJP) {
     AttentionBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
     TestGradient(backward.input, c_forward.input, func, 1e-14, 1e-12,
                  __LINE__);
-    TestGradient(grad.pre_attention_norm_scale,
-                 c_weights.pre_attention_norm_scale,
-                 func, 1e-12, 1e-12, __LINE__);
-    TestGradient(grad.attn_vec_einsum_w, c_weights.attn_vec_einsum_w,
-                 func, 1e-13, 1e-12, __LINE__);
-    TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
-                 func, 1e-14, 1e-12, __LINE__);
+    TestGradient(grad, c_weights, func);
   }
 }
 
@@ -333,6 +340,18 @@ void Complexify(const FFWWeights<T, TConfig>& w,
   Complexify(w.pre_ffw_norm_scale, c_w.pre_ffw_norm_scale);
   Complexify(w.gating_einsum_w, c_w.gating_einsum_w);
   Complexify(w.linear_w, c_w.linear_w);
+}
+
+template<typename T, typename TConfig, typename FUNC>
+void TestGradient(const FFWWeights<T, TConfig>& grad,
+                  FFWWeights<std::complex<T>, TConfig>& c_weights,
+                  FUNC func) {
+  TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
+               func, 1e-12, 1e-12, __LINE__);
+  TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
+               func, 1e-13, 1e-12, __LINE__);
+  TestGradient(grad.linear_w, c_weights.linear_w,
+               func, 1e-14, 1e-12, __LINE__);
 }
 
 TEST(BackPropTest, FFWBlockVJP) {
@@ -366,12 +385,7 @@ TEST(BackPropTest, FFWBlockVJP) {
     FFWBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
     TestGradient(backward.input, c_forward.input, func, 1e-14, 1e-12,
                  __LINE__);
-    TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
-                 func, 1e-12, 1e-12, __LINE__);
-    TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
-                 func, 1e-13, 1e-12, __LINE__);
-    TestGradient(grad.linear_w, c_weights.linear_w,
-                 func, 1e-14, 1e-12, __LINE__);
+    TestGradient(grad, c_weights, func);
   }
 }
 
@@ -428,24 +442,8 @@ TEST(BackPropTest, EndToEnd) {
     TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
                  func, 1e-15, 1e-13, __LINE__);
     for (int i = 0; i < TestConfig::kLayers; ++i) {
-      TestGradient(grad.layers[i].attn.pre_attention_norm_scale,
-                   c_weights.layers[i].attn.pre_attention_norm_scale,
-                   func, 1e-12, 1e-12, __LINE__);
-      TestGradient(grad.layers[i].attn.attn_vec_einsum_w,
-                   c_weights.layers[i].attn.attn_vec_einsum_w,
-                   func, 1e-13, 1e-12, __LINE__);
-      TestGradient(grad.layers[i].attn.qkv_einsum_w,
-                   c_weights.layers[i].attn.qkv_einsum_w,
-                   func, 1e-14, 1e-12, __LINE__);
-      TestGradient(grad.layers[i].ffw.pre_ffw_norm_scale,
-                   c_weights.layers[i].ffw.pre_ffw_norm_scale,
-                   func, 1e-12, 1e-12, __LINE__);
-      TestGradient(grad.layers[i].ffw.gating_einsum_w,
-                   c_weights.layers[i].ffw.gating_einsum_w,
-                   func, 1e-13, 1e-12, __LINE__);
-      TestGradient(grad.layers[i].ffw.linear_w,
-                   c_weights.layers[i].ffw.linear_w,
-                   func, 1e-14, 1e-12, __LINE__);
+      TestGradient(grad.layers[i].attn, c_weights.layers[i].attn, func);
+      TestGradient(grad.layers[i].ffw, c_weights.layers[i].ffw, func);
     }
   }
 }
