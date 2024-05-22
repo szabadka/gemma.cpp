@@ -254,6 +254,22 @@ void GatedGeluVJP(const T* in, const T* d_out, T* d_in, size_t N, size_t K) {
   }
 }
 
+template<typename T>
+void Rope(T* x, size_t N, int i) {
+  const size_t N2 = N / 2;
+  for (size_t dim = 0; dim < N2; ++dim) {
+    const T freq_exponents = T(2 * dim) / T(N);
+    const T timescale = std::pow(10000.0, freq_exponents);
+    const T theta = T(i) / timescale;
+    const T cos_val = std::cos(theta);
+    const T sin_val = std::sin(theta);
+    const T x0 = x[dim];
+    const T x1 = x[dim + N2];
+    x[dim] = x0 * cos_val - x1 * sin_val;
+    x[dim + N2] = x0 * sin_val + x1 * cos_val;
+  }
+}
+
 template <typename T, typename TConfig>
 struct AttnActivations {
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
@@ -264,6 +280,7 @@ struct AttnActivations {
   std::array<T, kSeqLen * kModelDim> pre_att_rms_out;
   std::array<T, kSeqLen * (kHeads + 2) * kQKVDim> qkv;
   std::array<T, kSeqLen * kHeads * kSeqLen> att;
+  std::array<T, kSeqLen * kHeads * kSeqLen> att_sm;
   std::array<T, kSeqLen * kHeads * kQKVDim> att_out;
   std::array<T, kSeqLen * kModelDim> att_post2;
 };
@@ -288,8 +305,6 @@ struct LayerActivations {
 
 template <typename T, typename TConfig>
 struct AllActivations {
-  AllActivations() {}  // prevents placement-new calling memset
-
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
@@ -360,13 +375,155 @@ void InputEmbeddingVJP(const T* w, const std::vector<int>& prompt, T scaling,
   }
 }
 
+template<typename T>
+void MaskedAttention(const T* qkv, T* output, size_t num_tokens,
+                     size_t kHeads, size_t kQKVDim, size_t kSeqLen) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    for (size_t head = 0; head < kHeads; ++head) {
+      const size_t qoffset = pos * (kHeads + 2) * kQKVDim;
+      const size_t aoffset = pos * kHeads * kSeqLen + head * kSeqLen;
+      const T* q = qkv + qoffset + head * kQKVDim;
+      for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
+        const T* k = qkv + (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
+        output[aoffset + pos2] = Dot(q, k, kQKVDim);
+      }
+    }
+  }
+}
+
+template<typename T>
+void MaskedAttentionVJP(const T* qkv, const T* doutput, T* dqkv,
+                        size_t num_tokens, size_t kHeads, size_t kQKVDim,
+                        size_t kSeqLen) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    const size_t offset = pos * (kHeads + 2) * kQKVDim;
+    memset(dqkv + offset, 0, (kHeads + 1) * kQKVDim * sizeof(qkv[0]));
+  }
+  for (size_t head = 0; head < kHeads; ++head) {
+    for (size_t pos = 0; pos < num_tokens; ++pos) {
+      const size_t qoffs = (pos * (kHeads + 2) + head) * kQKVDim;
+      const size_t aoffs = head * kSeqLen + pos * kHeads * kSeqLen;
+      const T* q = qkv + qoffs;
+      const T* dout = doutput + aoffs;
+      T* dq = dqkv + qoffs;
+      for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
+        const size_t koffs = (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
+        const T* k = qkv + koffs;
+        T* dk = dqkv + koffs;
+        MulByConstAndAdd(dout[pos2], k, dq, kQKVDim);
+        MulByConstAndAdd(dout[pos2], q, dk, kQKVDim);
+      }
+    }
+  }
+}
+
+template<typename T>
+void MaskedSoftmax(const T* x, T* y, size_t num_tokens,
+                   size_t kHeads, size_t kSeqLen) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    for (size_t head = 0; head < kHeads; ++head) {
+      size_t offset = pos * kHeads * kSeqLen + head * kSeqLen;
+      Softmax(x + offset, y + offset, pos + 1);
+    }
+  }
+}
+
+template<typename T>
+void MaskedSoftmaxVJP(const T* x, const T* dy, T* dx, size_t num_tokens,
+                      size_t kHeads, size_t kSeqLen) {
+  for (size_t head = 0; head < kHeads; ++head) {
+    for (size_t pos = 0; pos < num_tokens; ++pos) {
+      size_t offset = pos * kHeads * kSeqLen + head * kSeqLen;
+      SoftmaxVJP(x + offset, dy + offset, dx + offset, pos + 1);
+    }
+  }
+}
+
+template<typename T>
+void MixByAttention(const T* qkv, const T* attention, T* output,
+                    size_t num_tokens, size_t kHeads, size_t kQKVDim,
+                    size_t kSeqLen) {
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    for (size_t head = 0; head < kHeads; ++head) {
+      const T* att = &attention[pos * kHeads * kSeqLen + head * kSeqLen];
+      T* out = &output[head * kQKVDim + pos * kHeads * kQKVDim];
+      memset(out, 0, kQKVDim * sizeof(out[0]));
+      for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
+        size_t v_offset = (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
+        const T* v = &qkv[v_offset];
+        MulByConstAndAdd(att[pos2], v, out, kQKVDim);
+      }
+    }
+  }
+}
+
+template<typename T>
+void MixByAttentionVJP(const T* qkv, const T* attention, const T* doutput,
+                       T* dqkv, T* dattention, size_t num_tokens,
+                       size_t kHeads, size_t kQKVDim, size_t kSeqLen) {
+  auto v_offset = [&](size_t pos) {
+    return (pos * (kHeads + 2) + kHeads + 1) * kQKVDim;
+  };
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    memset(&dqkv[v_offset(pos)], 0, kQKVDim * sizeof(qkv[0]));
+  }
+  for (size_t head = 0; head < kHeads; ++head) {
+    for (size_t pos = 0; pos < num_tokens; ++pos) {
+      const size_t offset = head * kQKVDim + pos * kHeads * kQKVDim;
+      const size_t aoffset = head * kSeqLen + pos * kHeads * kSeqLen;
+      const T* att = &attention[aoffset];
+      const T* dout = &doutput[offset];
+      T* datt = &dattention[aoffset];
+      for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
+        datt[pos2] = Dot(dout, &qkv[v_offset(pos2)], kQKVDim);
+        MulByConstAndAdd(att[pos2], dout, &dqkv[v_offset(pos2)], kQKVDim);
+      }
+    }
+  }
+}
+
 template<typename T, typename TConfig>
 void ApplyAttentionBlock(const AttnWeights<T, TConfig>& weights,
-                         AttnActivations<T, TConfig>& forward,
+                         AttnActivations<T, TConfig>& activations,
                          size_t num_tokens, T* output) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
-  memcpy(output, forward.input.data(),
-         num_tokens * kModelDim * sizeof(output[0]));
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static constexpr size_t kQKVDim = TConfig::kQKVDim;
+  static constexpr size_t kHeads = TConfig::kHeads;
+  static const T kQueryScale = 1.0 / std::sqrt(T(kQKVDim));
+
+  RMSNorm(weights.pre_attention_norm_scale.data(), activations.input.data(),
+          activations.pre_att_rms_out.data(), kModelDim, num_tokens);
+
+  MatMul(weights.qkv_einsum_w.data(), activations.pre_att_rms_out.data(),
+         activations.qkv.data(), (kHeads + 2) * kQKVDim, kModelDim, num_tokens);
+
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    T* qkv = activations.qkv.data() + pos * (kHeads + 2) * kQKVDim;
+    for (size_t h = 0; h <= kHeads; ++h) {
+      Rope(qkv + h * kQKVDim, kQKVDim, pos);
+    }
+  }
+
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    T* qkv = activations.qkv.data() + pos * (kHeads + 2) * kQKVDim;
+    MulByConst(kQueryScale, qkv, kHeads * kQKVDim);
+  }
+
+  MaskedAttention(activations.qkv.data(), activations.att.data(),
+                  num_tokens, kHeads, kQKVDim, kSeqLen);
+
+  MaskedSoftmax(activations.att.data(), activations.att_sm.data(),
+                num_tokens, kHeads, kSeqLen);
+
+  MixByAttention(activations.qkv.data(), activations.att_sm.data(),
+                 activations.att_out.data(), num_tokens, kHeads, kQKVDim,
+                 kSeqLen);
+
+  MatMul(weights.attn_vec_einsum_w.data(), activations.att_out.data(),
+         output, kModelDim, kHeads * kQKVDim, num_tokens);
+
+  Add(activations.input.data(), output, output, num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>
@@ -377,8 +534,48 @@ void AttentionBlockVJP(const AttnWeights<T, TConfig>& weights,
                        AttnActivations<T, TConfig>& backward,
                        size_t num_tokens) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
-  memcpy(backward.input.data(), dy,
-         num_tokens * kModelDim * sizeof(dy[0]));
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static constexpr size_t kQKVDim = TConfig::kQKVDim;
+  static constexpr size_t kHeads = TConfig::kHeads;
+  static const T kQueryScale = 1.0 / std::sqrt(T(kQKVDim));
+
+  MatMulVJP(weights.attn_vec_einsum_w.data(), forward.att_out.data(),
+            dy, grad.attn_vec_einsum_w.data(), backward.att_out.data(),
+            kModelDim, kHeads * kQKVDim, num_tokens);
+
+  MixByAttentionVJP(forward.qkv.data(), forward.att_sm.data(),
+                    backward.att_out.data(), backward.qkv.data(),
+                    backward.att_sm.data(), num_tokens, kHeads, kQKVDim,
+                    kSeqLen);
+
+  MaskedSoftmaxVJP(forward.att.data(), backward.att_sm.data(),
+                   backward.att.data(), num_tokens, kHeads, kSeqLen);
+
+  MaskedAttentionVJP(forward.qkv.data(), backward.att.data(),
+                     backward.qkv.data(), num_tokens, kHeads, kQKVDim, kSeqLen);
+
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    T* qkv = backward.qkv.data() + pos * (kHeads + 2) * kQKVDim;
+    MulByConst(kQueryScale, qkv, kHeads * kQKVDim);
+  }
+
+  for (int pos = 0; pos < num_tokens; ++pos) {
+    T* qkv = backward.qkv.data() + pos * (kHeads + 2) * kQKVDim;
+    for (size_t h = 0; h <= kHeads; ++h) {
+      Rope(qkv + h * kQKVDim, kQKVDim, -pos);
+    }
+  }
+
+  MatMulVJP(weights.qkv_einsum_w.data(), forward.pre_att_rms_out.data(),
+            backward.qkv.data(), grad.qkv_einsum_w.data(),
+            backward.pre_att_rms_out.data(),
+            (kHeads + 2) * kQKVDim, kModelDim, num_tokens);
+  RMSNormVJP(weights.pre_attention_norm_scale.data(), forward.input.data(),
+             backward.pre_att_rms_out.data(),
+             grad.pre_attention_norm_scale.data(),
+             backward.input.data(), kModelDim, num_tokens);
+
+  Add(dy, backward.input.data(), backward.input.data(), num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>

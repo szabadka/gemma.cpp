@@ -149,6 +149,33 @@ TEST(BackPropTest, SoftmaxVJP) {
   }
 }
 
+TEST(BackPropTest, MaskedSoftmaxVJP) {
+  static const size_t kSeqLen = 16;
+  static const size_t kHeads = 2;
+  static const size_t kTokens = 14;
+  static const size_t N = kHeads * kSeqLen * kSeqLen;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, N> x;
+  std::array<T, N> dx = {};
+  std::array<T, N> dy;
+  std::array<TC, N> c_x;
+  std::array<TC, N> c_y;
+
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(x, 1.0 * (1 << iter), gen);
+    Complexify(x, c_x);
+    RandInit(dy, 1.0, gen);
+    auto func = [&]() {
+      MaskedSoftmax(c_x.data(), c_y.data(), kTokens, kHeads, kSeqLen);
+      return Dot(dy.data(), c_y.data(), N);
+    };
+    MaskedSoftmaxVJP(x.data(), dy.data(), dx.data(), kTokens, kHeads, kSeqLen);
+    TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
+  }
+}
+
 TEST(BackPropTest, SoftcapVJP) {
   static const size_t N = 64;
   std::mt19937 gen(42);
@@ -223,6 +250,75 @@ TEST(BackPropTest, GatedGeluVJP) {
   }
 }
 
+TEST(BackPropTest, MaskedAttentionVJP) {
+  static const size_t kSeqLen = 16;
+  static const size_t kHeads = 2;
+  static const size_t kQKVDim = 8;
+  static const size_t kTokens = 14;
+  static const size_t kQKVSize = kSeqLen * (kHeads + 2) * kQKVDim;
+  static const size_t kOutSize = kSeqLen * kHeads * kSeqLen;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, kQKVSize> x;
+  std::array<T, kQKVSize> dx = {};
+  std::array<T, kOutSize> dy;
+  std::array<TC, kQKVSize> c_x;
+  std::array<TC, kOutSize> c_y;
+
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(x, 1.0, gen);
+    Complexify(x, c_x);
+    RandInit(dy, 1.0, gen);
+    auto func = [&]() {
+      MaskedAttention(c_x.data(), c_y.data(), kTokens, kHeads, kQKVDim,
+                      kSeqLen);
+      return Dot(dy.data(), c_y.data(), kOutSize);
+    };
+    MaskedAttentionVJP(x.data(), dy.data(), dx.data(),
+                       kTokens, kHeads, kQKVDim, kSeqLen);
+    TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
+  }
+}
+
+TEST(BackPropTest, MixByAttentionVJP) {
+  static const size_t kSeqLen = 16;
+  static const size_t kHeads = 2;
+  static const size_t kQKVDim = 8;
+  static const size_t kTokens = 14;
+  static const size_t kQKVSize = kSeqLen * (kHeads + 2) * kQKVDim;
+  static const size_t kAttnSize = kSeqLen * kHeads * kSeqLen;
+  static const size_t kOutSize = kSeqLen * kHeads * kQKVDim;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, kQKVSize> qkv;
+  std::array<T, kQKVSize> dqkv = {};
+  std::array<T, kAttnSize> attn;
+  std::array<T, kAttnSize> dattn = {};
+  std::array<T, kOutSize> dy;
+  std::array<TC, kQKVSize> c_qkv;
+  std::array<TC, kAttnSize> c_attn;
+  std::array<TC, kOutSize> c_y;
+
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(qkv, 1.0, gen);
+    RandInit(attn, 1.0, gen);
+    Complexify(qkv, c_qkv);
+    Complexify(attn, c_attn);
+    RandInit(dy, 1.0, gen);
+    auto func = [&]() {
+      MixByAttention(c_qkv.data(), c_attn.data(), c_y.data(),
+                     kTokens, kHeads, kQKVDim, kSeqLen);
+      return Dot(dy.data(), c_y.data(), kOutSize);
+    };
+    MixByAttentionVJP(qkv.data(), attn.data(), dy.data(), dqkv.data(),
+                      dattn.data(), kTokens, kHeads, kQKVDim, kSeqLen);
+    TestGradient(dqkv, c_qkv, func, 1e-14, 1e-15, __LINE__);
+    TestGradient(dattn, c_attn, func, 1e-14, 1e-15, __LINE__);
+  }
+}
+
 TEST(BackPropTest, InputEmbeddingVJP) {
   static const size_t kSeqLen = 8;
   static const size_t kVocabSize = 4;
@@ -239,7 +335,7 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   size_t context_size = 1;
   size_t num_tokens = prompt.size() - 1;
 
-  for (size_t iter = 0; iter < 1; ++iter) {
+  for (size_t iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0, gen);
     RandInit(dy, 1.0, gen);
     Complexify(weights, c_weights);
@@ -250,7 +346,7 @@ TEST(BackPropTest, InputEmbeddingVJP) {
     memset(&grad, 0, sizeof(grad));
     InputEmbeddingVJP(weights.data(), prompt, 3.0, dy.data(), grad.data(),
                       kModelDim);
-    TestGradient(grad, c_weights, func, 1e-100, 1e-14, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-16, 1e-14, __LINE__);
   }
 }
 
@@ -289,7 +385,7 @@ void TestGradient(const AttnWeights<T, TConfig>& grad,
   TestGradient(grad.attn_vec_einsum_w, c_weights.attn_vec_einsum_w,
                func, 1e-13, 1e-12, __LINE__);
   TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
-               func, 1e-14, 1e-12, __LINE__);
+               func, 1e-12, 1e-12, __LINE__);
 }
 
 TEST(BackPropTest, AttnBlockVJP) {
@@ -321,7 +417,7 @@ TEST(BackPropTest, AttnBlockVJP) {
     memset(&grad, 0, sizeof(grad));
     ApplyAttentionBlock(weights, forward, num_tokens, y.data());
     AttentionBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, 1e-14, 1e-12,
+    TestGradient(backward.input, c_forward.input, func, 1e-13, 1e-12,
                  __LINE__);
     TestGradient(grad, c_weights, func);
   }
@@ -438,7 +534,7 @@ TEST(BackPropTest, EndToEnd) {
 
     TestGradient(grad.embedder_input_embedding,
                  c_weights.embedder_input_embedding,
-                 func,  1e-14, 1e-13, __LINE__);
+                 func,  1e-13, 1e-13, __LINE__);
     TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
                  func, 1e-15, 1e-13, __LINE__);
     for (int i = 0; i < TestConfig::kLayers; ++i) {
