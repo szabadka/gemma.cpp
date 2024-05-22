@@ -546,4 +546,33 @@ TEST(BackPropTest, EndToEnd) {
   }
 }
 
+TEST(BackProptest, Convergence) {
+  std::mt19937 gen(42);
+  using T = double;
+  AllWeights<T, TestConfig> weights;
+  AllWeights<T, TestConfig> grad;
+  AllActivations<T, TestConfig> forward;
+  AllActivations<T, TestConfig> backward;
+  std::vector<int> prompt = { 0, 1, 2, 3, 0, 3, 2, 1 };
+  size_t context_size = 1;
+
+  RandInit(weights, gen);
+  const T learning_rate = 0.01;
+  T loss = std::numeric_limits<T>::max();
+
+  size_t step = 0;
+  for (; step <= 10000; ++step) {
+    loss = ForwardPass(prompt, context_size, weights, forward);
+    memset(&grad, 0, sizeof(grad));
+    BackwardPass(prompt, context_size, weights, forward, grad, backward);
+    const T scale = -learning_rate;
+    MulByConstAndAdd(scale, grad, weights);
+    if (step % 1000 == 0) {
+      printf("step: %5zu  loss: %.15f\n", step, loss);
+    }
+  }
+
+  EXPECT_LT(loss, 3e-4);
+}
+
 }  // namespace gcpp

@@ -59,6 +59,11 @@ void MulByConstAndAdd(T c, const T* x, T* out, size_t N) {
   }
 }
 
+template<typename T, size_t N>
+void MulByConstAndAdd(T c, const std::array<T, N>& x, std::array<T, N>& out) {
+  MulByConstAndAdd(c, x.data(), out.data(), N);
+}
+
 template<typename T>
 void Add(const T* a, const T* b, T* out, size_t N) {
   for (size_t i = 0; i < N; ++i) {
@@ -329,6 +334,14 @@ struct AttnWeights {
   std::array<T, (kHeads + 2) * kQKVDim * kModelDim> qkv_einsum_w;
 };
 
+template<typename T, typename TConfig>
+void MulByConstAndAdd(T c, const AttnWeights<T, TConfig>& x,
+                      AttnWeights<T, TConfig>& out) {
+  MulByConstAndAdd(c, x.pre_attention_norm_scale, out.pre_attention_norm_scale);
+  MulByConstAndAdd(c, x.attn_vec_einsum_w, out.attn_vec_einsum_w);
+  MulByConstAndAdd(c, x.qkv_einsum_w, out.qkv_einsum_w);
+}
+
 template <typename T, typename TConfig>
 struct FFWWeights {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -339,11 +352,26 @@ struct FFWWeights {
   std::array<T, kModelDim * kFFHiddenDim> linear_w;
 };
 
+template<typename T, typename TConfig>
+void MulByConstAndAdd(T c, const FFWWeights<T, TConfig>& x,
+                      FFWWeights<T, TConfig>& out) {
+  MulByConstAndAdd(c, x.pre_ffw_norm_scale, out.pre_ffw_norm_scale);
+  MulByConstAndAdd(c, x.gating_einsum_w, out.gating_einsum_w);
+  MulByConstAndAdd(c, x.linear_w, out.linear_w);
+}
+
 template <typename T, typename TConfig>
 struct LayerWeights {
   AttnWeights<T, TConfig> attn;
   FFWWeights<T, TConfig> ffw;
 };
+
+template<typename T, typename TConfig>
+void MulByConstAndAdd(T c, const LayerWeights<T, TConfig>& x,
+                      LayerWeights<T, TConfig>& out) {
+  MulByConstAndAdd(c, x.attn, out.attn);
+  MulByConstAndAdd(c, x.ffw, out.ffw);
+}
 
 template <typename T, typename TConfig>
 struct AllWeights {
@@ -355,6 +383,17 @@ struct AllWeights {
   std::array<T, kModelDim> final_norm_scale;
   std::array<LayerWeights<T, TConfig>, kLayers> layers;
 };
+
+template<typename T, typename TConfig>
+void MulByConstAndAdd(T c, const AllWeights<T, TConfig>& x,
+                      AllWeights<T, TConfig>& out) {
+  static constexpr size_t kLayers = TConfig::kLayers;
+  MulByConstAndAdd(c, x.embedder_input_embedding, out.embedder_input_embedding);
+  MulByConstAndAdd(c, x.final_norm_scale, out.final_norm_scale);
+  for (size_t i = 0; i < kLayers; ++i) {
+    MulByConstAndAdd(c, x.layers[i], out.layers[i]);
+  }
+}
 
 template<typename T>
 void InputEmbedding(const T* w, const std::vector<int>& prompt, T scaling,
