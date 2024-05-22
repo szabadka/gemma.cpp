@@ -265,6 +265,62 @@ struct TestConfig {
 };
 
 template<typename T, typename TConfig>
+void RandInit(AttnWeights<T, TConfig>& w, std::mt19937& gen) {
+  RandInit(w.pre_attention_norm_scale, 1.0, gen);
+  RandInit(w.attn_vec_einsum_w, 1.0, gen);
+  RandInit(w.qkv_einsum_w, 1.0, gen);
+}
+
+template<typename T, typename TConfig>
+void Complexify(const AttnWeights<T, TConfig>& w,
+                AttnWeights<std::complex<T>, TConfig>& c_w) {
+  Complexify(w.pre_attention_norm_scale, c_w.pre_attention_norm_scale);
+  Complexify(w.attn_vec_einsum_w, c_w.attn_vec_einsum_w);
+  Complexify(w.qkv_einsum_w, c_w.qkv_einsum_w);
+}
+
+TEST(BackPropTest, AttnBlockVJP) {
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  const size_t kOutputSize = TestConfig::kSeqLen * TestConfig::kModelDim;
+  AttnWeights<T, TestConfig> weights;
+  AttnWeights<T, TestConfig> grad;
+  AttnActivations<T, TestConfig> forward;
+  AttnActivations<T, TestConfig> backward = {};
+  AttnWeights<TC, TestConfig> c_weights;
+  AttnActivations<TC, TestConfig> c_forward;
+  std::array<T, kOutputSize> y;
+  std::array<T, kOutputSize> dy;
+  std::array<TC, kOutputSize> c_y;
+  const size_t num_tokens = 3;
+
+  for (size_t iter = 0; iter < 10; ++iter) {
+    RandInit(weights, gen);
+    RandInit(forward.input, 1.0, gen);
+    RandInit(dy, 1.0, gen);
+    Complexify(weights, c_weights);
+    Complexify(forward.input, c_forward.input);
+    auto func = [&]() {
+      ApplyAttentionBlock(c_weights, c_forward, num_tokens, c_y.data());
+      return Dot(dy.data(), c_y.data(), num_tokens * TestConfig::kModelDim);
+    };
+    memset(&grad, 0, sizeof(grad));
+    ApplyAttentionBlock(weights, forward, num_tokens, y.data());
+    AttentionBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
+    TestGradient(backward.input, c_forward.input, func, 1e-14, 1e-12,
+                 __LINE__);
+    TestGradient(grad.pre_attention_norm_scale,
+                 c_weights.pre_attention_norm_scale,
+                 func, 1e-12, 1e-12, __LINE__);
+    TestGradient(grad.attn_vec_einsum_w, c_weights.attn_vec_einsum_w,
+                 func, 1e-13, 1e-12, __LINE__);
+    TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
+                 func, 1e-14, 1e-12, __LINE__);
+  }
+}
+
+template<typename T, typename TConfig>
 void RandInit(FFWWeights<T, TConfig>& w, std::mt19937& gen) {
   RandInit(w.pre_ffw_norm_scale, 1.0, gen);
   RandInit(w.gating_einsum_w, 1.0, gen);
@@ -287,7 +343,7 @@ TEST(BackPropTest, FFWBlockVJP) {
   FFWWeights<T, TestConfig> weights;
   FFWWeights<T, TestConfig> grad;
   FFWActivations<T, TestConfig> forward;
-  FFWActivations<T, TestConfig> backward;
+  FFWActivations<T, TestConfig> backward = {};
   FFWWeights<TC, TestConfig> c_weights;
   FFWActivations<TC, TestConfig> c_forward;
   std::array<T, kOutputSize> y;
@@ -325,6 +381,7 @@ void RandInit(AllWeights<T, TConfig>& w, std::mt19937& gen) {
   RandInit(w.embedder_input_embedding, 1.0, gen);
   RandInit(w.final_norm_scale, 1.0, gen);
   for (size_t i = 0; i < kLayers; ++i) {
+    RandInit(w.layers[i].attn, gen);
     RandInit(w.layers[i].ffw, gen);
   }
 }
@@ -336,6 +393,7 @@ void Complexify(const AllWeights<T, TConfig>& w,
   Complexify(w.embedder_input_embedding, c_w.embedder_input_embedding);
   Complexify(w.final_norm_scale, c_w.final_norm_scale);
   for (size_t i = 0; i < kLayers; ++i) {
+    Complexify(w.layers[i].attn, c_w.layers[i].attn);
     Complexify(w.layers[i].ffw, c_w.layers[i].ffw);
   }
 }
@@ -370,6 +428,15 @@ TEST(BackPropTest, EndToEnd) {
     TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
                  func, 1e-15, 1e-13, __LINE__);
     for (int i = 0; i < TestConfig::kLayers; ++i) {
+      TestGradient(grad.layers[i].attn.pre_attention_norm_scale,
+                   c_weights.layers[i].attn.pre_attention_norm_scale,
+                   func, 1e-12, 1e-12, __LINE__);
+      TestGradient(grad.layers[i].attn.attn_vec_einsum_w,
+                   c_weights.layers[i].attn.attn_vec_einsum_w,
+                   func, 1e-13, 1e-12, __LINE__);
+      TestGradient(grad.layers[i].attn.qkv_einsum_w,
+                   c_weights.layers[i].attn.qkv_einsum_w,
+                   func, 1e-14, 1e-12, __LINE__);
       TestGradient(grad.layers[i].ffw.pre_ffw_norm_scale,
                    c_weights.layers[i].ffw.pre_ffw_norm_scale,
                    func, 1e-12, 1e-12, __LINE__);
