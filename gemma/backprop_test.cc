@@ -351,13 +351,13 @@ TEST(BackPropTest, InputEmbeddingVJP) {
 }
 
 struct TestConfig {
-  static constexpr int kSeqLen = 4;
+  static constexpr int kSeqLen = 8;
   static constexpr int kVocabSize = 4;
-  static constexpr int kModelDim = 8;
+  static constexpr int kModelDim = 32;
   static constexpr int kHeads = 2;
-  static constexpr int kQKVDim = 5;
-  static constexpr int kFFHiddenDim = 16;
-  static constexpr int kLayers = 1;
+  static constexpr int kQKVDim = 20;
+  static constexpr int kFFHiddenDim = 64;
+  static constexpr int kLayers = 3;
 };
 
 template<typename T, typename TConfig>
@@ -381,11 +381,11 @@ void TestGradient(const AttnWeights<T, TConfig>& grad,
                   FUNC func) {
   TestGradient(grad.pre_attention_norm_scale,
                c_weights.pre_attention_norm_scale,
-               func, 1e-12, 1e-12, __LINE__);
+               func, 2e-12, 1e-12, __LINE__);
   TestGradient(grad.attn_vec_einsum_w, c_weights.attn_vec_einsum_w,
-               func, 1e-13, 1e-12, __LINE__);
-  TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
                func, 1e-12, 1e-12, __LINE__);
+  TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
+               func, 5e-12, 5e-12, __LINE__);
 }
 
 TEST(BackPropTest, AttnBlockVJP) {
@@ -417,7 +417,7 @@ TEST(BackPropTest, AttnBlockVJP) {
     memset(&grad, 0, sizeof(grad));
     ApplyAttentionBlock(weights, forward, num_tokens, y.data());
     AttentionBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, 1e-13, 1e-12,
+    TestGradient(backward.input, c_forward.input, func, 5e-12, 5e-12,
                  __LINE__);
     TestGradient(grad, c_weights, func);
   }
@@ -445,9 +445,9 @@ void TestGradient(const FFWWeights<T, TConfig>& grad,
   TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
                func, 1e-12, 1e-12, __LINE__);
   TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
-               func, 1e-13, 1e-12, __LINE__);
+               func, 1e-12, 1e-12, __LINE__);
   TestGradient(grad.linear_w, c_weights.linear_w,
-               func, 1e-14, 1e-12, __LINE__);
+               func, 1e-13, 1e-12, __LINE__);
 }
 
 TEST(BackPropTest, FFWBlockVJP) {
@@ -479,7 +479,7 @@ TEST(BackPropTest, FFWBlockVJP) {
     memset(&grad, 0, sizeof(grad));
     ApplyFFWBlock(weights, forward, num_tokens, y.data());
     FFWBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, 1e-14, 1e-12,
+    TestGradient(backward.input, c_forward.input, func, 1e-14, 5e-12,
                  __LINE__);
     TestGradient(grad, c_weights, func);
   }
@@ -518,8 +518,10 @@ TEST(BackPropTest, EndToEnd) {
   AllActivations<T, TestConfig> backward;
   AllWeights<TC, TestConfig> c_weights;
   AllActivations<TC, TestConfig> c_forward;
-  std::vector<int> prompt = { 0, 1, 2, 3, 0 };
+  std::vector<int> prompt = { 0, 1, 2, 3, 0, 3, 2, 1 };
   size_t context_size = 1;
+
+  printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
 
   for (size_t iter = 0; iter < 10; ++iter) {
     RandInit(weights, gen);
@@ -534,9 +536,9 @@ TEST(BackPropTest, EndToEnd) {
 
     TestGradient(grad.embedder_input_embedding,
                  c_weights.embedder_input_embedding,
-                 func,  1e-13, 1e-13, __LINE__);
+                 func,  1e-12, 1e-12, __LINE__);
     TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
-                 func, 1e-15, 1e-13, __LINE__);
+                 func, 1e-12, 1e-12, __LINE__);
     for (int i = 0; i < TestConfig::kLayers; ++i) {
       TestGradient(grad.layers[i].attn, c_weights.layers[i].attn, func);
       TestGradient(grad.layers[i].ffw, c_weights.layers[i].ffw, func);
