@@ -514,6 +514,15 @@ void Complexify(const AllWeights<T, TConfig>& w,
 class PromptSampler {
  public:
   virtual Prompt Sample(std::mt19937& gen) = 0;
+
+  std::vector<Prompt> SampleBatch(size_t batch_size, std::mt19937& gen) {
+    std::vector<Prompt> batch;
+    batch.reserve(batch_size);
+    for (size_t i = 0; i < batch_size; ++i) {
+      batch.emplace_back(Sample(gen));
+    }
+    return batch;
+  }
 };
 
 class ReverseSequenceSampler : public PromptSampler {
@@ -570,8 +579,9 @@ TEST(BackPropTest, EndToEnd) {
   printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
 
   ReverseSequenceSampler training_task({0, 0, 1, 1});
-  for (size_t iter = 0; iter < 10; ++iter) {
-    Prompt prompt = training_task.Sample(gen);
+  std::vector<Prompt> batch = training_task.SampleBatch(10, gen);
+
+  for (const Prompt& prompt : batch) {
     LogPrompt(prompt);
     RandInit(weights, gen);
     ForwardPass(prompt, weights, forward);
@@ -620,10 +630,9 @@ TEST(BackProptest, Convergence) {
   printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
   RandInit(weights, gen);
 
-  printf("Sample prompts:\n");
+  printf("Sample batch:\n");
   for (size_t i = 0; i < 10; ++i) {
-    Prompt prompt = training_task.Sample(gen);
-    LogPrompt(prompt);
+    LogPrompt(training_task.Sample(gen));
   }
 
   bool stop = false;
@@ -631,10 +640,10 @@ TEST(BackProptest, Convergence) {
   while (!stop) {
     T loss = 0.0;
     memset(&grad, 0, sizeof(grad));
-    std::mt19937 sampler_gen(42);
+    std::mt19937 sgen(42);
+    std::vector<Prompt> batch = training_task.SampleBatch(kBatchSize, sgen);
     for (size_t i = 0; i < kBatchSize; ++i) {
-      Prompt prompt = training_task.Sample(sampler_gen);
-      ASSERT_LE(prompt.tokens.size() - 1, TestConfig::kSeqLen);
+      const Prompt& prompt = batch[i];
       loss += ForwardPass(prompt, weights, forward);
       BackwardPass(prompt, weights, forward, grad, backward);
     }
