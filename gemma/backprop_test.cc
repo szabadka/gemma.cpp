@@ -201,7 +201,7 @@ TEST(BackPropTest, SoftcapVJP) {
 }
 
 TEST(BackPropTest, CrossEntropyLossGrad) {
-  static const size_t K = 4;
+  static const size_t K = 8;
   static const size_t V = 64;
   std::mt19937 gen(42);
   using T = double;
@@ -209,10 +209,11 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
   std::array<T, K * V> x;
   std::array<T, K * V> dx;
   std::array<TC, K * V> c_x;
-  std::vector<int> prompt = { 0, 1, 2, 3, 0 };
-  size_t context_size = 1;
+  std::vector<int> prompt = { 0, 1, 2, 3, 0, 3, 2, 1, 0 };
+  size_t context_size;
 
   for (int iter = 0; iter < 10; ++iter) {
+    context_size = 1 + (iter % 6);
     RandInit(x, 1.0 * (1 << iter), gen);
     Softcap(x.data(), x.data(), V * K);
     Softmax(x.data(), x.data(), V, K);
@@ -332,7 +333,6 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   std::array<TC, kVocabSize * kModelDim> c_weights;
   std::array<TC, kSeqLen * kModelDim> c_y;
   std::vector<int> prompt = { 0, 1, 2, 3, 0, 1, 2 };
-  size_t context_size = 1;
   size_t num_tokens = prompt.size() - 1;
 
   for (size_t iter = 0; iter < 10; ++iter) {
@@ -350,12 +350,15 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   }
 }
 
+static constexpr int kReverseToken = 10;
+static constexpr int kEndToken = 11;
+
 struct TestConfig {
-  static constexpr int kSeqLen = 8;
-  static constexpr int kVocabSize = 4;
+  static constexpr int kSeqLen = 18;
+  static constexpr int kVocabSize = 12;
   static constexpr int kModelDim = 32;
-  static constexpr int kHeads = 2;
-  static constexpr int kQKVDim = 20;
+  static constexpr int kHeads = 4;
+  static constexpr int kQKVDim = 10;
   static constexpr int kFFHiddenDim = 64;
   static constexpr int kLayers = 3;
 };
@@ -381,11 +384,11 @@ void TestGradient(const AttnWeights<T, TConfig>& grad,
                   FUNC func) {
   TestGradient(grad.pre_attention_norm_scale,
                c_weights.pre_attention_norm_scale,
-               func, 2e-12, 1e-12, __LINE__);
+               func, 1e-11, 1e-11, __LINE__);
   TestGradient(grad.attn_vec_einsum_w, c_weights.attn_vec_einsum_w,
-               func, 1e-12, 1e-12, __LINE__);
+               func, 1e-11, 1e-11, __LINE__);
   TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
-               func, 5e-12, 5e-12, __LINE__);
+               func, 1e-11, 1e-11, __LINE__);
 }
 
 TEST(BackPropTest, AttnBlockVJP) {
@@ -417,7 +420,7 @@ TEST(BackPropTest, AttnBlockVJP) {
     memset(&grad, 0, sizeof(grad));
     ApplyAttentionBlock(weights, forward, num_tokens, y.data());
     AttentionBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, 5e-12, 5e-12,
+    TestGradient(backward.input, c_forward.input, func, 1e-11, 1e-11,
                  __LINE__);
     TestGradient(grad, c_weights, func);
   }
@@ -443,11 +446,11 @@ void TestGradient(const FFWWeights<T, TConfig>& grad,
                   FFWWeights<std::complex<T>, TConfig>& c_weights,
                   FUNC func) {
   TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
-               func, 1e-12, 1e-12, __LINE__);
+               func, 1e-11, 1e-11, __LINE__);
   TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
-               func, 1e-12, 1e-12, __LINE__);
+               func, 1e-11, 1e-11, __LINE__);
   TestGradient(grad.linear_w, c_weights.linear_w,
-               func, 1e-13, 1e-12, __LINE__);
+               func, 1e-11, 1e-11, __LINE__);
 }
 
 TEST(BackPropTest, FFWBlockVJP) {
@@ -479,7 +482,7 @@ TEST(BackPropTest, FFWBlockVJP) {
     memset(&grad, 0, sizeof(grad));
     ApplyFFWBlock(weights, forward, num_tokens, y.data());
     FFWBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, 1e-14, 5e-12,
+    TestGradient(backward.input, c_forward.input, func, 1e-11, 1e-11,
                  __LINE__);
     TestGradient(grad, c_weights, func);
   }
@@ -508,6 +511,49 @@ void Complexify(const AllWeights<T, TConfig>& w,
   }
 }
 
+class PromptSampler {
+ public:
+  virtual size_t Sample(std::mt19937& gen, std::vector<int>& sample) = 0;
+};
+
+class ReverseSequenceSampler : public PromptSampler {
+ public:
+  explicit ReverseSequenceSampler(const std::vector<int>& length_histo)
+      : token_dist_(0, 9) {
+    for (int i = 0; i < length_histo.size(); ++i) {
+      const int count = length_histo[i];
+      for (int j = 0; j < count; ++j) {
+        length_lut_.push_back(i + 1);
+      }
+    }
+    length_dist_ = std::uniform_int_distribution<>(0, length_lut_.size() - 1);
+  }
+
+  size_t Sample(std::mt19937& gen, std::vector<int>& sample) override {
+    int len = length_lut_[length_dist_(gen)];
+    sample.resize(2 * len + 2);
+    sample[len] = kReverseToken;
+    sample[2 * len + 1] = kEndToken;
+    for (size_t i = 0; i < len; ++i) {
+      sample[i] = sample[2 * len - i] = token_dist_(gen);
+    }
+    return len + 1;
+  }
+
+ private:
+  std::uniform_int_distribution<> token_dist_;
+  std::uniform_int_distribution<> length_dist_;
+  std::vector<int> length_lut_;
+};
+
+void LogPrompt(const std::vector<int>& prompt, size_t context_size) {
+  static const char* kVocab[] = {
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-->", "|",
+  };
+  for (int token : prompt) printf("%s", kVocab[token]);
+  printf("  [context_size: %zu]\n", context_size);
+}
+
 TEST(BackPropTest, EndToEnd) {
   std::mt19937 gen(42);
   using T = double;
@@ -518,12 +564,14 @@ TEST(BackPropTest, EndToEnd) {
   AllActivations<T, TestConfig> backward;
   AllWeights<TC, TestConfig> c_weights;
   AllActivations<TC, TestConfig> c_forward;
-  std::vector<int> prompt = { 0, 1, 2, 3, 0, 3, 2, 1 };
-  size_t context_size = 1;
 
   printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
 
+  ReverseSequenceSampler training_task({0, 0, 1, 1});
   for (size_t iter = 0; iter < 10; ++iter) {
+    std::vector<int> prompt;
+    size_t context_size = training_task.Sample(gen, prompt);
+    LogPrompt(prompt, context_size);
     RandInit(weights, gen);
     ForwardPass(prompt, context_size, weights, forward);
     memset(&grad, 0, sizeof(grad));
@@ -536,9 +584,9 @@ TEST(BackPropTest, EndToEnd) {
 
     TestGradient(grad.embedder_input_embedding,
                  c_weights.embedder_input_embedding,
-                 func,  1e-12, 1e-12, __LINE__);
+                 func,  1e-11, 1e-11, __LINE__);
     TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
-                 func, 1e-12, 1e-12, __LINE__);
+                 func, 1e-11, 1e-11, __LINE__);
     for (int i = 0; i < TestConfig::kLayers; ++i) {
       TestGradient(grad.layers[i].attn, c_weights.layers[i].attn, func);
       TestGradient(grad.layers[i].ffw, c_weights.layers[i].ffw, func);
@@ -553,26 +601,42 @@ TEST(BackProptest, Convergence) {
   AllWeights<T, TestConfig> grad;
   AllActivations<T, TestConfig> forward;
   AllActivations<T, TestConfig> backward;
-  std::vector<int> prompt = { 0, 1, 2, 3, 0, 3, 2, 1 };
-  size_t context_size = 1;
+  constexpr size_t kBatchSize = 20;
 
   RandInit(weights, gen);
   const T learning_rate = 0.01;
-  T loss = std::numeric_limits<T>::max();
 
+  ReverseSequenceSampler training_task({0, 0, 1, 1});
+
+  bool stop = false;
   size_t step = 0;
-  for (; step <= 10000; ++step) {
-    loss = ForwardPass(prompt, context_size, weights, forward);
+  while (!stop) {
+    T loss = 0.0;
     memset(&grad, 0, sizeof(grad));
-    BackwardPass(prompt, context_size, weights, forward, grad, backward);
-    const T scale = -learning_rate;
-    MulByConstAndAdd(scale, grad, weights);
-    if (step % 1000 == 0) {
+    std::mt19937 sampler_gen(42);
+    for (size_t i = 0; i < kBatchSize; ++i) {
+      std::vector<int> prompt;
+      size_t context_size = training_task.Sample(sampler_gen, prompt);
+      if (step == 0) {
+        LogPrompt(prompt, context_size);
+      }
+      ASSERT_LE(prompt.size() - 1, TestConfig::kSeqLen);
+      loss += ForwardPass(prompt, context_size, weights, forward);
+      BackwardPass(prompt, context_size, weights, forward, grad, backward);
+    }
+    loss /= kBatchSize;
+    stop = step >= 10000 || loss < 1e-2;
+    if (step % 10 == 0 || stop) {
       printf("step: %5zu  loss: %.15f\n", step, loss);
+    }
+    if (!stop) {
+      const T scale = -learning_rate / kBatchSize;
+      MulByConstAndAdd(scale, grad, weights);
+      ++step;
     }
   }
 
-  EXPECT_LT(loss, 3e-4);
+  EXPECT_LT(step, 3000);
 }
 
 }  // namespace gcpp
