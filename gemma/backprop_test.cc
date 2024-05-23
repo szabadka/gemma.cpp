@@ -357,10 +357,10 @@ struct TestConfig {
   static constexpr int kSeqLen = 18;
   static constexpr int kVocabSize = 12;
   static constexpr int kModelDim = 32;
-  static constexpr int kHeads = 4;
-  static constexpr int kQKVDim = 10;
-  static constexpr int kFFHiddenDim = 64;
-  static constexpr int kLayers = 3;
+  static constexpr int kHeads = 3;
+  static constexpr int kQKVDim = 12;
+  static constexpr int kFFHiddenDim = 48;
+  static constexpr int kLayers = 2;
 };
 
 template<typename T, typename TConfig>
@@ -613,7 +613,8 @@ T ForwardPass(const std::vector<Prompt>& batch,
   for (const Prompt& prompt : batch) {
     loss += ForwardPass(prompt, weights, forward);
   }
-  return loss / batch.size();
+  T scale = 1.0 / batch.size();
+  return loss * scale;
 }
 
 template<typename T, typename TConfig>
@@ -664,13 +665,16 @@ T FindOptimalUpdate(const AllWeights<T, TConfig>& grad,
 TEST(BackProptest, Convergence) {
   std::mt19937 gen(42);
   using T = double;
+  using TC = std::complex<T>;
   AllWeights<T, TestConfig> weights;
   AllWeights<T, TestConfig> grad;
   AllWeights<T, TestConfig> tmp;
   AllActivations<T, TestConfig> forward;
   AllActivations<T, TestConfig> backward;
-  constexpr size_t kBatchSize = 20;
-  ReverseSequenceSampler training_task({0, 0, 1, 1});
+  AllWeights<TC, TestConfig> c_weights;
+  AllActivations<TC, TestConfig> c_forward;
+  constexpr size_t kBatchSize = 10;
+  ReverseSequenceSampler training_task({0, 0, 0, 1, 1});
   T learning_rate = 0.01;
 
   printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
@@ -693,11 +697,32 @@ TEST(BackProptest, Convergence) {
       loss += ForwardPass(prompt, weights, forward);
       BackwardPass(prompt, weights, forward, grad, backward);
     }
+
+    if (step % 300 == 0) {
+      printf("Checking gradient...\n");
+      Complexify(weights, c_weights);
+      auto func = [&]() {
+        TC scale = batch.size();
+        return ForwardPass(batch, c_weights, c_forward) * scale;
+      };
+
+      TestGradient(grad.embedder_input_embedding,
+                   c_weights.embedder_input_embedding,
+                   func,  1e-11, 1e-11, __LINE__);
+      TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
+                   func, 1e-11, 1e-11, __LINE__);
+      for (int i = 0; i < TestConfig::kLayers; ++i) {
+        TestGradient(grad.layers[i].attn, c_weights.layers[i].attn, func);
+        TestGradient(grad.layers[i].ffw, c_weights.layers[i].ffw, func);
+      }
+    }
+
     loss /= batch.size();
-    ASSERT_LT(loss, prev_loss);
+    EXPECT_LT(loss, prev_loss);
     stop = step >= 10000 || loss < 1e-2;
-    if (step % 1 == 0 || stop) {
-      printf("step: %5zu  loss: %.15f\n", step, loss);
+    if (step % 10 == 0 || stop) {
+      printf("step: %5zu  loss: %.15f  learning_rate: %.15f\n",
+             step, loss, learning_rate);
     }
     if (!stop) {
       learning_rate = FindOptimalUpdate(
