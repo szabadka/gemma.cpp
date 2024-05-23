@@ -594,6 +594,17 @@ TEST(BackPropTest, EndToEnd) {
   }
 }
 
+template<typename T, typename TConfig>
+T FindOptimalUpdate(const AllWeights<T, TConfig>& grad,
+                    AllWeights<T, TestConfig>& weights,
+                    size_t batch_size,
+                    T loss,
+                    T learning_rate) {
+  const T scale = -learning_rate / batch_size;
+  MulByConstAndAdd(scale, grad, weights);
+  return learning_rate;
+}
+
 TEST(BackProptest, Convergence) {
   std::mt19937 gen(42);
   using T = double;
@@ -602,11 +613,18 @@ TEST(BackProptest, Convergence) {
   AllActivations<T, TestConfig> forward;
   AllActivations<T, TestConfig> backward;
   constexpr size_t kBatchSize = 20;
-
-  RandInit(weights, gen);
-  const T learning_rate = 0.01;
-
   ReverseSequenceSampler training_task({0, 0, 1, 1});
+  std::vector<int> prompt;
+  T learning_rate = 0.01;
+
+  printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
+  RandInit(weights, gen);
+
+  printf("Sample prompts:\n");
+  for (size_t i = 0; i < 10; ++i) {
+    size_t context_size = training_task.Sample(gen, prompt);
+    LogPrompt(prompt, context_size);
+  }
 
   bool stop = false;
   size_t step = 0;
@@ -615,11 +633,7 @@ TEST(BackProptest, Convergence) {
     memset(&grad, 0, sizeof(grad));
     std::mt19937 sampler_gen(42);
     for (size_t i = 0; i < kBatchSize; ++i) {
-      std::vector<int> prompt;
       size_t context_size = training_task.Sample(sampler_gen, prompt);
-      if (step == 0) {
-        LogPrompt(prompt, context_size);
-      }
       ASSERT_LE(prompt.size() - 1, TestConfig::kSeqLen);
       loss += ForwardPass(prompt, context_size, weights, forward);
       BackwardPass(prompt, context_size, weights, forward, grad, backward);
@@ -630,8 +644,8 @@ TEST(BackProptest, Convergence) {
       printf("step: %5zu  loss: %.15f\n", step, loss);
     }
     if (!stop) {
-      const T scale = -learning_rate / kBatchSize;
-      MulByConstAndAdd(scale, grad, weights);
+      learning_rate = FindOptimalUpdate(
+          grad, weights, kBatchSize, loss, learning_rate);
       ++step;
     }
   }
