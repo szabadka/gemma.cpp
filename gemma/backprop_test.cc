@@ -209,18 +209,18 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
   std::array<T, K * V> x;
   std::array<T, K * V> dx;
   std::array<TC, K * V> c_x;
-  std::vector<int> prompt = { 0, 1, 2, 3, 0, 3, 2, 1, 0 };
-  size_t context_size;
+  Prompt prompt;
+  prompt.tokens = { 0, 1, 2, 3, 0, 3, 2, 1, 0 };
 
   for (int iter = 0; iter < 10; ++iter) {
-    context_size = 1 + (iter % 6);
+    prompt.context_size = 1 + (iter % 6);
     RandInit(x, 1.0 * (1 << iter), gen);
     Softcap(x.data(), x.data(), V * K);
     Softmax(x.data(), x.data(), V, K);
-    CrossEntropyLossGrad(x.data(), dx.data(), prompt, context_size, V);
+    CrossEntropyLossGrad(x.data(), dx.data(), prompt, V);
     Complexify(x, c_x);
     auto func = [&]() {
-      return CrossEntropyLoss(c_x.data(), prompt, context_size, V);
+      return CrossEntropyLoss(c_x.data(), prompt, V);
     };
     TestGradient(dx, c_x, func, 1e-100, 1e-15, __LINE__);
   }
@@ -332,19 +332,19 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   std::array<T, kSeqLen * kModelDim> dy;
   std::array<TC, kVocabSize * kModelDim> c_weights;
   std::array<TC, kSeqLen * kModelDim> c_y;
-  std::vector<int> prompt = { 0, 1, 2, 3, 0, 1, 2 };
-  size_t num_tokens = prompt.size() - 1;
+  std::vector<int> tokens = { 0, 1, 2, 3, 0, 1, 2 };
+  size_t num_tokens = tokens.size() - 1;
 
   for (size_t iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0, gen);
     RandInit(dy, 1.0, gen);
     Complexify(weights, c_weights);
     auto func = [&]() {
-      InputEmbedding(c_weights.data(), prompt, TC(3.0), c_y.data(), kModelDim);
+      InputEmbedding(c_weights.data(), tokens, TC(3.0), c_y.data(), kModelDim);
       return Dot(dy.data(), c_y.data(), num_tokens * kModelDim);
     };
     memset(&grad, 0, sizeof(grad));
-    InputEmbeddingVJP(weights.data(), prompt, 3.0, dy.data(), grad.data(),
+    InputEmbeddingVJP(weights.data(), tokens, 3.0, dy.data(), grad.data(),
                       kModelDim);
     TestGradient(grad, c_weights, func, 1e-16, 1e-14, __LINE__);
   }
@@ -513,7 +513,7 @@ void Complexify(const AllWeights<T, TConfig>& w,
 
 class PromptSampler {
  public:
-  virtual size_t Sample(std::mt19937& gen, std::vector<int>& sample) = 0;
+  virtual Prompt Sample(std::mt19937& gen) = 0;
 };
 
 class ReverseSequenceSampler : public PromptSampler {
@@ -529,15 +529,17 @@ class ReverseSequenceSampler : public PromptSampler {
     length_dist_ = std::uniform_int_distribution<>(0, length_lut_.size() - 1);
   }
 
-  size_t Sample(std::mt19937& gen, std::vector<int>& sample) override {
+  Prompt Sample(std::mt19937& gen) override {
+    Prompt prompt;
     int len = length_lut_[length_dist_(gen)];
-    sample.resize(2 * len + 2);
-    sample[len] = kReverseToken;
-    sample[2 * len + 1] = kEndToken;
+    prompt.tokens.resize(2 * len + 2);
+    prompt.tokens[len] = kReverseToken;
+    prompt.tokens[2 * len + 1] = kEndToken;
     for (size_t i = 0; i < len; ++i) {
-      sample[i] = sample[2 * len - i] = token_dist_(gen);
+      prompt.tokens[i] = prompt.tokens[2 * len - i] = token_dist_(gen);
     }
-    return len + 1;
+    prompt.context_size = len + 1;
+    return prompt;
   }
 
  private:
@@ -546,12 +548,12 @@ class ReverseSequenceSampler : public PromptSampler {
   std::vector<int> length_lut_;
 };
 
-void LogPrompt(const std::vector<int>& prompt, size_t context_size) {
+void LogPrompt(const Prompt& prompt) {
   static const char* kVocab[] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-->", "|",
   };
-  for (int token : prompt) printf("%s", kVocab[token]);
-  printf("  [context_size: %zu]\n", context_size);
+  for (int token : prompt.tokens) printf("%s", kVocab[token]);
+  printf("  [context_size: %zu]\n", prompt.context_size);
 }
 
 TEST(BackPropTest, EndToEnd) {
@@ -569,17 +571,16 @@ TEST(BackPropTest, EndToEnd) {
 
   ReverseSequenceSampler training_task({0, 0, 1, 1});
   for (size_t iter = 0; iter < 10; ++iter) {
-    std::vector<int> prompt;
-    size_t context_size = training_task.Sample(gen, prompt);
-    LogPrompt(prompt, context_size);
+    Prompt prompt = training_task.Sample(gen);
+    LogPrompt(prompt);
     RandInit(weights, gen);
-    ForwardPass(prompt, context_size, weights, forward);
+    ForwardPass(prompt, weights, forward);
     memset(&grad, 0, sizeof(grad));
-    BackwardPass(prompt, context_size, weights, forward, grad, backward);
+    BackwardPass(prompt, weights, forward, grad, backward);
 
     Complexify(weights, c_weights);
     auto func = [&]() {
-      return ForwardPass(prompt, context_size, c_weights, c_forward);
+      return ForwardPass(prompt, c_weights, c_forward);
     };
 
     TestGradient(grad.embedder_input_embedding,
@@ -614,7 +615,6 @@ TEST(BackProptest, Convergence) {
   AllActivations<T, TestConfig> backward;
   constexpr size_t kBatchSize = 20;
   ReverseSequenceSampler training_task({0, 0, 1, 1});
-  std::vector<int> prompt;
   T learning_rate = 0.01;
 
   printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
@@ -622,8 +622,8 @@ TEST(BackProptest, Convergence) {
 
   printf("Sample prompts:\n");
   for (size_t i = 0; i < 10; ++i) {
-    size_t context_size = training_task.Sample(gen, prompt);
-    LogPrompt(prompt, context_size);
+    Prompt prompt = training_task.Sample(gen);
+    LogPrompt(prompt);
   }
 
   bool stop = false;
@@ -633,10 +633,10 @@ TEST(BackProptest, Convergence) {
     memset(&grad, 0, sizeof(grad));
     std::mt19937 sampler_gen(42);
     for (size_t i = 0; i < kBatchSize; ++i) {
-      size_t context_size = training_task.Sample(sampler_gen, prompt);
-      ASSERT_LE(prompt.size() - 1, TestConfig::kSeqLen);
-      loss += ForwardPass(prompt, context_size, weights, forward);
-      BackwardPass(prompt, context_size, weights, forward, grad, backward);
+      Prompt prompt = training_task.Sample(sampler_gen);
+      ASSERT_LE(prompt.tokens.size() - 1, TestConfig::kSeqLen);
+      loss += ForwardPass(prompt, weights, forward);
+      BackwardPass(prompt, weights, forward, grad, backward);
     }
     loss /= kBatchSize;
     stop = step >= 10000 || loss < 1e-2;

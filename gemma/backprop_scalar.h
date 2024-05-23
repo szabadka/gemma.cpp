@@ -396,20 +396,20 @@ void MulByConstAndAdd(T c, const AllWeights<T, TConfig>& x,
 }
 
 template<typename T>
-void InputEmbedding(const T* w, const std::vector<int>& prompt, T scaling,
+void InputEmbedding(const T* w, const std::vector<int>& tokens, T scaling,
                     T* y, size_t N) {
-  for (size_t i = 0; i + 1 < prompt.size(); ++i) {
-    int token = prompt[i];
+  for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+    int token = tokens[i];
     memcpy(y + i * N, w + token * N, N * sizeof(y[0]));
     MulByConst(scaling, y + i * N, N);
   }
 }
 
 template<typename T>
-void InputEmbeddingVJP(const T* w, const std::vector<int>& prompt, T scaling,
+void InputEmbeddingVJP(const T* w, const std::vector<int>& tokens, T scaling,
                        const T* dy, T* dw, size_t N) {
-  for (size_t i = 0; i + 1 < prompt.size(); ++i) {
-    int token = prompt[i];
+  for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+    int token = tokens[i];
     MulByConstAndAdd(scaling, dy + i * N, dw + token * N, N);
   }
 }
@@ -690,15 +690,19 @@ void LayerVJP(const LayerWeights<T, TConfig>& weights,
                     grad.attn, backward.attn, num_tokens);
 }
 
+struct Prompt {
+  std::vector<int> tokens;
+  size_t context_size;
+};
+
 template<typename T>
-T CrossEntropyLoss(const T* x, const std::vector<int>& prompt,
-                   size_t context_size, size_t V) {
+T CrossEntropyLoss(const T* x, const Prompt& prompt, size_t V) {
   T loss = {};
-  for (size_t i = 0; i + 1 < prompt.size(); ++i) {
-    if (i + 1 < context_size) {
+  for (size_t i = 0; i + 1 < prompt.tokens.size(); ++i) {
+    if (i + 1 < prompt.context_size) {
       continue;  // next token is part of context, don't try to predict it
     }
-    const int next_token = prompt[i + 1];
+    const int next_token = prompt.tokens[i + 1];
     loss += std::log(x[i * V + next_token]);
   }
   T scaling = -1.0 / std::log(2.0);
@@ -706,33 +710,31 @@ T CrossEntropyLoss(const T* x, const std::vector<int>& prompt,
 }
 
 template<typename T>
-void CrossEntropyLossGrad(const T* x, T* dx, const std::vector<int>& prompt,
-                          size_t context_size, size_t V) {
+void CrossEntropyLossGrad(const T* x, T* dx, const Prompt& prompt, size_t V) {
   T scaling = -1.0 / std::log(2.0);
-  size_t num_tokens = prompt.size() - 1;
+  size_t num_tokens = prompt.tokens.size() - 1;
   memset(dx, 0, V * num_tokens * sizeof(x[0]));
-  for (size_t i = 0; i + 1 < prompt.size(); ++i) {
-    if (i + 1 < context_size) {
+  for (size_t i = 0; i + 1 < prompt.tokens.size(); ++i) {
+    if (i + 1 < prompt.context_size) {
       continue;
     }
-    const int next_token = prompt[i + 1];
+    const int next_token = prompt.tokens[i + 1];
     dx[i * V + next_token] = scaling / x[i * V + next_token];
   }
 }
 
 template<typename T, typename TConfig>
-T ForwardPass(const std::vector<int>& prompt,
-              size_t context_size,
+T ForwardPass(const Prompt& prompt,
               const AllWeights<T, TConfig>& weights,
               AllActivations<T, TConfig>& forward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
-  const size_t num_tokens = prompt.size() - 1;
+  const size_t num_tokens = prompt.tokens.size() - 1;
 
   const T kEmbScaling = std::sqrt(kModelDim);
-  InputEmbedding(weights.embedder_input_embedding.data(), prompt, kEmbScaling,
-                 forward.layers[0].attn.input.data(), kModelDim);
+  InputEmbedding(weights.embedder_input_embedding.data(), prompt.tokens,
+                 kEmbScaling, forward.layers[0].attn.input.data(), kModelDim);
 
   for (size_t layer = 0; layer < kLayers; ++layer) {
     T* output = layer + 1 < kLayers ?
@@ -755,13 +757,11 @@ T ForwardPass(const std::vector<int>& prompt,
 
   Softmax(forward.logits.data(), forward.probs.data(), kVocabSize, num_tokens);
 
-  return CrossEntropyLoss(forward.probs.data(), prompt, context_size,
-                          kVocabSize);
+  return CrossEntropyLoss(forward.probs.data(), prompt, kVocabSize);
 }
 
 template<typename T, typename TConfig>
-void BackwardPass(const std::vector<int>& prompt,
-                  size_t context_size,
+void BackwardPass(const Prompt& prompt,
                   const AllWeights<T, TConfig>& weights,
                   const AllActivations<T, TConfig>& forward,
                   AllWeights<T, TConfig>& grad,
@@ -769,10 +769,10 @@ void BackwardPass(const std::vector<int>& prompt,
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
-  const size_t num_tokens = prompt.size() - 1;
+  const size_t num_tokens = prompt.tokens.size() - 1;
 
   CrossEntropyLossGrad(forward.probs.data(), backward.probs.data(), prompt,
-                       context_size, kVocabSize);
+                       kVocabSize);
 
   SoftmaxVJP(forward.logits.data(), backward.probs.data(),
              backward.logits.data(), kVocabSize, num_tokens);
@@ -803,7 +803,7 @@ void BackwardPass(const std::vector<int>& prompt,
 
   const T kEmbScaling = std::sqrt(kModelDim);
   InputEmbeddingVJP(weights.embedder_input_embedding.data(),
-                    prompt, kEmbScaling,
+                    prompt.tokens, kEmbScaling,
                     backward.layers[0].attn.input.data(),
                     grad.embedder_input_embedding.data(), kModelDim);
 }
