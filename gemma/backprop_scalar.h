@@ -129,11 +129,11 @@ void RMSNormVJP(const T* w, const T* x, const T* dy, T* dw, T* dx,
     const T ss3 = ss * ss * ss / T(N);
     T tmp = 0.0;
     for (size_t j = 0; j < N; ++j) {
-      tmp += (1.0f + w[j]) * dy[i* N + j] * x[i * N + j];
+      tmp += (T(1.0) + w[j]) * dy[i* N + j] * x[i * N + j];
     }
     tmp *= ss3;
     for (size_t j = 0; j < N; ++j) {
-      dx[i * N + j] = ss * (1.0 + w[j]) * dy[i* N + j] - tmp * x[i * N + j];
+      dx[i * N + j] = ss * (T(1.0) + w[j]) * dy[i* N + j] - tmp * x[i * N + j];
     }
   }
 }
@@ -187,7 +187,7 @@ void SoftmaxVJP(const T* x, const T* dy, T* dx, size_t N, size_t K) {
 template<typename T>
 void Softcap(const T* x, T* out, size_t N) {
   T cap = 30.0;
-  T inv_cap = 1.0 / cap;
+  T inv_cap = T(1.0) / cap;
   for (size_t i = 0; i < N; ++i) {
     out[i] = cap * std::tanh(x[i] * inv_cap);
   }
@@ -198,10 +198,10 @@ void SoftcapVJP(const T* x, const T* dy, T* dx, size_t N) {
   std::vector<T> y(N);
   Softcap(x, &y[0], N);
   T cap = 30.0;
-  T inv_cap = 1.0 / cap;
+  T inv_cap = T(1.0) / cap;
   for (size_t i = 0; i < N; ++i) {
     T scaled = y[i] * inv_cap;
-    dx[i] = dy[i] * (1.0 - scaled * scaled);
+    dx[i] = dy[i] * (T(1.0) - scaled * scaled);
   }
 }
 
@@ -212,7 +212,7 @@ T Gelu(T x) {
 
   const T x3 = x * x * x;
   const T arg = kSqrt2OverPi * (kMul * x3 + x);
-  const T cdf = 0.5 * (T(1.0) + std::tanh(arg));
+  const T cdf = T(0.5) * (T(1.0) + std::tanh(arg));
   return x * cdf;
 }
 
@@ -226,10 +226,10 @@ T GeluDerivative(T x) {
   const T x3 = x2 * x;
   const T arg = kSqrt2OverPi * (kMul * x3 + x);
   const T tanh = std::tanh(arg);
-  const T cdf = 0.5 * (T(1.0) + tanh);
+  const T cdf = T(0.5) * (T(1.0) + tanh);
   const T dtanh = T(1.0) - tanh * tanh;
   const T darg = kMul2 * x2 + kSqrt2OverPi;
-  return 0.5 * x * dtanh * darg + cdf;
+  return T(0.5) * x * dtanh * darg + cdf;
 }
 
 template<typename T>
@@ -259,12 +259,12 @@ void GatedGeluVJP(const T* in, const T* d_out, T* d_in, size_t N, size_t K) {
   }
 }
 
-template<typename T>
-void Rope(T* x, size_t N, int i) {
+template<typename T, typename U>
+void Rope(T* x, U base, size_t N, int i) {
   const size_t N2 = N / 2;
   for (size_t dim = 0; dim < N2; ++dim) {
     const T freq_exponents = T(2 * dim) / T(N);
-    const T timescale = std::pow(10000.0, freq_exponents);
+    const T timescale = std::pow(base, freq_exponents);
     const T theta = T(i) / timescale;
     const T cos_val = std::cos(theta);
     const T sin_val = std::sin(theta);
@@ -273,6 +273,16 @@ void Rope(T* x, size_t N, int i) {
     x[dim] = x0 * cos_val - x1 * sin_val;
     x[dim + N2] = x0 * sin_val + x1 * cos_val;
   }
+}
+
+template<typename T>
+void Rope(T* x, size_t N, int i) {
+  Rope(x, T(10000.0), N, i);
+}
+
+template<typename T>
+void Rope(std::complex<T>* x, size_t N, int i) {
+  Rope(x, T(10000.0), N, i);
 }
 
 template <typename T, typename TConfig>
@@ -529,7 +539,7 @@ void ApplyAttentionBlock(const AttnWeights<T, TConfig>& weights,
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
-  static const T kQueryScale = 1.0 / std::sqrt(T(kQKVDim));
+  static const T kQueryScale = T(1.0) / std::sqrt(T(kQKVDim));
 
   RMSNorm(weights.pre_attention_norm_scale.data(), activations.input.data(),
           activations.pre_att_rms_out.data(), kModelDim, num_tokens);
