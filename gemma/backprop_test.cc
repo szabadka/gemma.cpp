@@ -606,14 +606,59 @@ TEST(BackPropTest, EndToEnd) {
 }
 
 template<typename T, typename TConfig>
+T ForwardPass(const std::vector<Prompt>& batch,
+              const AllWeights<T, TConfig>& weights,
+              AllActivations<T, TConfig>& forward) {
+  T loss = 0.0;
+  for (const Prompt& prompt : batch) {
+    loss += ForwardPass(prompt, weights, forward);
+  }
+  return loss / batch.size();
+}
+
+template<typename T, typename TConfig>
+T ForwardPass(T learning_rate,
+              const std::vector<Prompt>& batch,
+              const AllWeights<T, TConfig>& weights,
+              const AllWeights<T, TConfig>& grad,
+              AllWeights<T, TestConfig>& tmp,
+              AllActivations<T, TConfig>& forward) {
+  memcpy(&tmp, &weights, sizeof(tmp));
+  const T scale = -learning_rate / batch.size();
+  MulByConstAndAdd(scale, grad, tmp);
+  return ForwardPass(batch, tmp, forward);
+}
+
+template<typename T, typename TConfig>
 T FindOptimalUpdate(const AllWeights<T, TConfig>& grad,
                     AllWeights<T, TestConfig>& weights,
-                    size_t batch_size,
-                    T loss,
-                    T learning_rate) {
-  const T scale = -learning_rate / batch_size;
+                    AllWeights<T, TestConfig>& tmp,
+                    AllActivations<T, TConfig>& forward,
+                    const std::vector<Prompt>& batch,
+                    T loss, T initial_learning_rate) {
+  T lr0 = initial_learning_rate;
+  T loss0 = ForwardPass(lr0, batch, weights, grad, tmp, forward);
+  for (size_t iter = 0; iter < 30; ++iter) {
+    T lr1 = lr0 * 0.5;
+    T loss1 = ForwardPass(lr1, batch, weights, grad, tmp, forward);
+    if (loss0 < loss && loss1 >= loss0) {
+      break;
+    }
+    loss0 = loss1;
+    lr0 = lr1;
+  }
+  for (size_t iter = 0; iter < 30; ++iter) {
+    T lr1 = lr0 * 2.0;
+    T loss1 = ForwardPass(lr1, batch, weights, grad, tmp, forward);
+    if (loss1 >= loss0) {
+      break;
+    }
+    loss0 = loss1;
+    lr0 = lr1;
+  }
+  const T scale = -lr0 / batch.size();
   MulByConstAndAdd(scale, grad, weights);
-  return learning_rate;
+  return lr0;
 }
 
 TEST(BackProptest, Convergence) {
@@ -621,6 +666,7 @@ TEST(BackProptest, Convergence) {
   using T = double;
   AllWeights<T, TestConfig> weights;
   AllWeights<T, TestConfig> grad;
+  AllWeights<T, TestConfig> tmp;
   AllActivations<T, TestConfig> forward;
   AllActivations<T, TestConfig> backward;
   constexpr size_t kBatchSize = 20;
@@ -635,6 +681,7 @@ TEST(BackProptest, Convergence) {
     LogPrompt(training_task.Sample(gen));
   }
 
+  T prev_loss = std::numeric_limits<T>::max();
   bool stop = false;
   size_t step = 0;
   while (!stop) {
@@ -642,21 +689,22 @@ TEST(BackProptest, Convergence) {
     memset(&grad, 0, sizeof(grad));
     std::mt19937 sgen(42);
     std::vector<Prompt> batch = training_task.SampleBatch(kBatchSize, sgen);
-    for (size_t i = 0; i < kBatchSize; ++i) {
-      const Prompt& prompt = batch[i];
+    for (const Prompt& prompt : batch) {
       loss += ForwardPass(prompt, weights, forward);
       BackwardPass(prompt, weights, forward, grad, backward);
     }
-    loss /= kBatchSize;
+    loss /= batch.size();
+    ASSERT_LT(loss, prev_loss);
     stop = step >= 10000 || loss < 1e-2;
-    if (step % 10 == 0 || stop) {
+    if (step % 1 == 0 || stop) {
       printf("step: %5zu  loss: %.15f\n", step, loss);
     }
     if (!stop) {
       learning_rate = FindOptimalUpdate(
-          grad, weights, kBatchSize, loss, learning_rate);
+          grad, weights, tmp, forward, batch, loss, learning_rate);
       ++step;
     }
+    prev_loss = loss;
   }
 
   EXPECT_LT(step, 3000);
