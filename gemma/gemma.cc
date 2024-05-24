@@ -92,11 +92,11 @@ float ScaleWeights(float* data, size_t len) {
 
 template <typename TConfig>
 WeightStorageT AllocateWeights(hwy::ThreadPool& pool) {
-  using TWeights = Weights<TConfig>;
+  using TWeights = Weights<float, TConfig>;
   hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
       hwy::AllocateAligned<uint8_t>(sizeof(TWeights));
   TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
-  new (&weights->layer_ptrs) LayerPointers<TConfig>(pool);
+  new (&weights->layer_ptrs) LayerPointers<float, TConfig>(pool);
   return weights_u8;
 }
 
@@ -129,7 +129,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
   }
 
   WeightStorageT weights_u8 = AllocateWeights<TConfig>(pool);
-  auto* weights = reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
+  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
 
   size_t scale_pos = 0;
   FILE* fptr;
@@ -162,7 +162,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
            sizeof(weights->final_norm_scale));
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
     auto type = TConfig::kLayerConfig[layer];
-    Layer<TConfig>* layer_view = weights->GetLayer(layer);
+    Layer<float, TConfig>* layer_view = weights->GetLayer(layer);
 
 #define READ_WEIGHTS(name)                                                 \
   do {                                                                     \
@@ -235,7 +235,7 @@ template <class TConfig>
 struct CompressedLayer {
   // No ctor/dtor, allocated via AllocateAligned.
 
-  using TLayer = gcpp::Layer<TConfig>;
+  using TLayer = gcpp::Layer<float, TConfig>;
   using WeightT = typename TConfig::WeightT;
 
   static constexpr size_t kHeads = TLayer::kHeads;
@@ -325,13 +325,13 @@ struct CompressedWeights {
 
 template <class TConfig>
 using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
-                         Weights<TConfig>>;
+                         Weights<float, TConfig>>;
 
 // Aligned.
 template <class TConfig, size_t TBatchSize>
 struct Activations {
   static constexpr size_t kBatchSize = TBatchSize;
-  using LayerConfig = Layer<TConfig>;
+  using LayerConfig = Layer<float, TConfig>;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
@@ -455,8 +455,8 @@ void DeleteLayersPtrs(CompressedWeights<Config>* c_weights) {
   c_weights->c_layer_ptrs.~CompressedLayerPointers<Config>();
 }
 template <class Config>
-void DeleteLayersPtrs(Weights<Config>* weights) {
-  weights->layer_ptrs.~LayerPointers<Config>();
+void DeleteLayersPtrs(Weights<float, Config>* weights) {
+  weights->layer_ptrs.~LayerPointers<float, Config>();
 }
 }  // namespace
 
@@ -1252,7 +1252,7 @@ float ComputeCrossEntropyGriffin2B(GemmaImpl<ConfigGriffin2B>& gemma,
 //
 // This avoids repeating the list of tensors between loading and compressing.
 template <class TConfig, class Func>
-void ForEachTensor(Weights<TConfig>* weights,
+void ForEachTensor(Weights<float, TConfig>* weights,
                    CompressedWeights<TConfig>* c_weights, Func& func) {
   func("c_embedding",
        weights ? weights->embedder_input_embedding.data() : nullptr,
@@ -1264,7 +1264,7 @@ void ForEachTensor(Weights<TConfig>* weights,
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    Layer<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
+    Layer<float, TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
     CompressedLayer<TConfig>* layer_weights =
         c_weights ? c_weights->GetLayer(idx) : nullptr;
 
@@ -1460,14 +1460,14 @@ void CompressWeights(const Path& weights_path,
   const bool scale_for_compression = TConfig::kNumTensorScales > 0;
   const hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
       LoadWeights<TConfig>(weights_path, pool, scale_for_compression);
-  Weights<TConfig>* weights =
-      reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
+  Weights<float, TConfig>* weights =
+      reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
   Compressor compressor(pool);
   ForEachTensor<TConfig>(weights, c_weights, compressor);
   compressor.AddScales(weights->scales.data(), weights->scales.size());
   compressor.WriteAll(pool, compressed_weights_path);
 
-  weights->layer_ptrs.~LayerPointers<TConfig>();
+  weights->layer_ptrs.~LayerPointers<float, TConfig>();
   c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
 }
 
@@ -1515,7 +1515,7 @@ class WeightLogger {
 
 template <typename TConfig>
 void LogWeightStats(const WeightStorageT& weights_u8) {
-  auto* weights = reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
+  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
   WeightLogger logger;
   ForEachTensor<TConfig>(weights, nullptr, logger);
   printf("%-20s  %12zu\n", "Total", logger.total_weights);
@@ -1561,7 +1561,7 @@ class WeightInitializer {
 template <typename TConfig>
 void InitWeights(InitMode mode, WeightStorageT& weights_u8,
                  std::mt19937* gen) {
-  auto* weights = reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
+  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
   // TODO(szabadka) Use the same weight initialization method as in the python
   // version.
   // TODO(szabadka) Implement multi-threaded initialization.
@@ -1601,16 +1601,17 @@ void UpdateTensor(const std::array<float, kCapacity>& grad, float scale,
 template <typename TConfig>
 void UpdateWeights(const WeightStorageT& grad_u8, float scale,
                    WeightStorageT& weights_u8, hwy::ThreadPool& pool) {
-  const auto& grad = *reinterpret_cast<const Weights<TConfig>*>(grad_u8.get());
-  auto* weights = reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
+  const auto& grad =
+      *reinterpret_cast<const Weights<float, TConfig>*>(grad_u8.get());
+  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
 
   UpdateTensor(grad.embedder_input_embedding, scale,
                weights->embedder_input_embedding);
   UpdateTensor(grad.final_norm_scale, scale, weights->final_norm_scale);
 
   pool.Run(0, TConfig::kLayers, [&](uint64_t idx, size_t /*thread*/) {
-    const Layer<TConfig>* gl = grad.GetLayer(idx);
-    Layer<TConfig>* wl = weights->GetLayer(idx);
+    const Layer<float, TConfig>* gl = grad.GetLayer(idx);
+    Layer<float, TConfig>* wl = weights->GetLayer(idx);
 
 #define UPDATE_FUNC(member) UpdateTensor(gl->member, scale, wl->member);
     // TODO(szabadka) Implement it for Griffin as well.
@@ -1844,12 +1845,12 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
 }
 
 template <typename TConfig>
-void LayerVJP(const Layer<TConfig>& weights,
+void LayerVJP(const Layer<float, TConfig>& weights,
               const ForwardLayer<TConfig>& forward,
               const float* HWY_RESTRICT next_layer_grad,
               size_t num_tokens,
               float* HWY_RESTRICT even_odd,
-              Layer<TConfig>& grad,
+              Layer<float, TConfig>& grad,
               ForwardLayer<TConfig>& backward,
               hwy::ThreadPool& pool) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -2033,7 +2034,7 @@ float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
   HWY_DASSERT(context_size < prompt.size());
   const size_t num_tokens = prompt.size() - 1;
 
-  using TWeights = Weights<TConfig>;
+  using TWeights = Weights<float, TConfig>;
   const auto& weights = *reinterpret_cast<const WeightsT<TConfig>*>(weights_u8.get());
   auto& forward = *reinterpret_cast<ForwardPass<TConfig>*>(forward_u8.get());
 
@@ -2081,7 +2082,7 @@ void CrossEntropyLossBackwardStep(const std::vector<int>& prompt,
   HWY_DASSERT(context_size < prompt.size());
   const size_t num_tokens = prompt.size() - 1;
 
-  using TWeights = Weights<TConfig>;
+  using TWeights = Weights<float, TConfig>;
   const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
   const auto& forward =

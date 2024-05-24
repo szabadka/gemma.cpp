@@ -18,7 +18,7 @@
 
 namespace gcpp {
 
-template <class TConfig>
+template <typename T, class TConfig>
 struct Layer {
   Layer() = default;
   static constexpr size_t kHeads = TConfig::kHeads;
@@ -38,71 +38,68 @@ struct Layer {
   static constexpr size_t kGriffinDim =
       TConfig::kGriffinLayers > 0 ? kModelDim : 0;
 
-  template <class T, size_t N>
-  using ArrayT = std::array<T, N>;
-
   union {
     struct {
-      ArrayT<float, kAttVecEinsumWSize> attn_vec_einsum_w;
-      ArrayT<float, kQKVEinsumWSize> qkv_einsum_w;
-      ArrayT<float, kAOBiasDim> attention_output_biases;
+      std::array<T, kAttVecEinsumWSize> attn_vec_einsum_w;
+      std::array<T, kQKVEinsumWSize> qkv_einsum_w;
+      std::array<T, kAOBiasDim> attention_output_biases;
     };
 
     struct {
-      ArrayT<float, kGriffinDim * kGriffinDim> linear_x_w;
-      ArrayT<float, kGriffinDim> linear_x_biases;
-      ArrayT<float, kGriffinDim * kGriffinDim> linear_y_w;
-      ArrayT<float, kGriffinDim> linear_y_biases;
-      ArrayT<float, kGriffinDim * kGriffinDim> linear_out_w;
-      ArrayT<float, kGriffinDim> linear_out_biases;
-      ArrayT<float, kConv1dWidth * kGriffinDim> conv_w;
-      ArrayT<float, kGriffinDim> conv_biases;
-      ArrayT<float, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
-      ArrayT<float, kGriffinDim * 2> gate_biases;
-      ArrayT<float, kGriffinDim> a;
+      std::array<T, kGriffinDim * kGriffinDim> linear_x_w;
+      std::array<T, kGriffinDim> linear_x_biases;
+      std::array<T, kGriffinDim * kGriffinDim> linear_y_w;
+      std::array<T, kGriffinDim> linear_y_biases;
+      std::array<T, kGriffinDim * kGriffinDim> linear_out_w;
+      std::array<T, kGriffinDim> linear_out_biases;
+      std::array<T, kConv1dWidth * kGriffinDim> conv_w;
+      std::array<T, kGriffinDim> conv_biases;
+      std::array<T, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
+      std::array<T, kGriffinDim * 2> gate_biases;
+      std::array<T, kGriffinDim> a;
     } griffin;
   };
 
-  ArrayT<float, kGatingEinsumWSize> gating_einsum_w;
-  ArrayT<float, kModelDim * kFFHiddenDim> linear_w;
-  ArrayT<float, kModelDim> pre_attention_norm_scale;
-  ArrayT<float, kModelDim> pre_ffw_norm_scale;
+  std::array<T, kGatingEinsumWSize> gating_einsum_w;
+  std::array<T, kModelDim * kFFHiddenDim> linear_w;
+  std::array<T, kModelDim> pre_attention_norm_scale;
+  std::array<T, kModelDim> pre_ffw_norm_scale;
 
-  ArrayT<float, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
-  ArrayT<float, kFFBiases ? kModelDim : 0> ffw_output_biases;
+  std::array<T, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
+  std::array<T, kFFBiases ? kModelDim : 0> ffw_output_biases;
 };
 
 // Array instead of single large allocation for parallel mem init. Split out of
 // Weights so that only these pointers are initialized.
-template <class TConfig>
+template <typename T, class TConfig>
 struct LayerPointers {
   explicit LayerPointers(hwy::ThreadPool& pool) {
     pool.Run(0, TConfig::kLayers, [this](uint64_t task, size_t /*thread*/) {
-      this->layers[task] = hwy::AllocateAligned<Layer<TConfig>>(1);
+      this->layers[task] = hwy::AllocateAligned<Layer<T, TConfig>>(1);
     });
   }
 
-  using TLayer = Layer<TConfig>;
+  using TLayer = Layer<T, TConfig>;
   std::array<hwy::AlignedFreeUniquePtr<TLayer[]>, TConfig::kLayers> layers;
 };
 
-template <class TConfig>
+template <typename T, class TConfig>
 struct Weights {
   // No ctor/dtor, allocated via AllocateAligned.
 
-  std::array<float, TConfig::kVocabSize * TConfig::kModelDim>
+  std::array<T, TConfig::kVocabSize * TConfig::kModelDim>
       embedder_input_embedding;
 
-  std::array<float, TConfig::kModelDim> final_norm_scale;
+  std::array<T, TConfig::kModelDim> final_norm_scale;
 
-  LayerPointers<TConfig> layer_ptrs;
+  LayerPointers<T, TConfig> layer_ptrs;
 
-  std::array<float, TConfig::kNumTensorScales> scales;
+  std::array<T, TConfig::kNumTensorScales> scales;
 
-  const Layer<TConfig>* GetLayer(size_t layer) const {
+  const Layer<T, TConfig>* GetLayer(size_t layer) const {
     return layer_ptrs.layers[layer].get();
   }
-  Layer<TConfig>* GetLayer(size_t layer) {
+  Layer<T, TConfig>* GetLayer(size_t layer) {
     return layer_ptrs.layers[layer].get();
   }
 };
