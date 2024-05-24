@@ -191,7 +191,7 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     size_t num_tokens = std::min<size_t>(prompt.size() - pos, batch_tokens);
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
-#if 0
+#if 1
     auto kv_cache = CreateKVCache(model_type);
     float entropy =
         ComputeCrossEntropy(model, num_tokens, prompt_slice, kv_cache, pool,
