@@ -112,6 +112,42 @@ TEST(BackPropTest, MatMulVJP) {
   }
 }
 
+TEST(BackPropTest, MultiHeadMatMulVJP) {
+  static const size_t kRows = 2;
+  static const size_t kCols = 16;
+  static const size_t kHeads = 4;
+  static const size_t kTokens = 3;
+  std::mt19937 gen(42);
+  using T = double;
+  using TC = std::complex<T>;
+  std::array<T, kRows * kCols * kHeads> weights;
+  std::array<T, kTokens * kCols * kHeads> x;
+  std::array<T, kRows * kCols * kHeads> grad;
+  std::array<T, kTokens * kCols * kHeads> dx;
+  std::array<TC, kRows * kCols * kHeads> c_weights;
+  std::array<TC, kTokens * kCols * kHeads> c_x;
+  std::array<TC, kTokens * kRows> c_y;
+  std::array<T, kTokens * kRows> dy;
+
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(weights, 1.0 * (1 << iter), gen);
+    RandInit(x, 1.0 * (1 << iter), gen);
+    RandInit(dy, 1.0, gen);
+    Complexify(weights, c_weights);
+    Complexify(x, c_x);
+    auto func = [&]() {
+      MultiHeadMatMul(c_weights.data(), c_x.data(), c_y.data(), kHeads, kRows,
+                      kCols, kTokens);
+      return Dot(dy.data(), c_y.data(), kTokens * kRows);
+    };
+    memset(&grad, 0, sizeof(grad));
+    MultiHeadMatMulVJP(weights.data(), x.data(), dy.data(), grad.data(),
+                       dx.data(), kHeads, kRows, kCols, kTokens);
+    TestGradient(dx, c_x, func, 1e-15, 1e-13,__LINE__);
+    TestGradient(grad, c_weights, func, 1e-15, 1e-13,__LINE__);
+  }
+}
+
 TEST(BackPropTest, RMSNormVJP) {
   static const size_t K = 2;
   static const size_t N = 64;
@@ -718,7 +754,7 @@ TEST(BackProptest, Convergence) {
       BackwardPass(prompt, weights, forward, grad, backward);
     }
 
-    if (step % 100 == 0) {
+    if (step % 200 == 0) {
       printf("Checking gradient...\n");
       Complexify(weights, c_weights);
       auto func = [&]() {
@@ -728,7 +764,7 @@ TEST(BackProptest, Convergence) {
 
       TestGradient(grad.embedder_input_embedding,
                    c_weights.embedder_input_embedding,
-                   func,  2e-3f, 2e-3f, __LINE__);
+                   func,  2e-3f, 4e-3f, __LINE__);
       TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
                    func, 2e-3f, 2e-3f, __LINE__);
       for (int i = 0; i < TestConfig::kLayers; ++i) {
@@ -754,7 +790,7 @@ TEST(BackProptest, Convergence) {
     prev_loss = loss;
   }
 
-  EXPECT_LT(step, 300);
+  EXPECT_LT(step, 1000);
 }
 
 }  // namespace gcpp

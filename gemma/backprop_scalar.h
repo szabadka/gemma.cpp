@@ -94,6 +94,38 @@ void MatMulVJP(const T* w, const T* x, const T* dy, T* dw, T* dx,
   }
 }
 
+// w is H concatenated N x M matrix in row-major order, x is HM x K matrix in
+// column-major order and y = w' * x is N x K matrix in column-major order,
+// where w' is the rearrangement of w into an N x HM matrix.
+template<typename T>
+void MultiHeadMatMul(const T* w, const T* x, T* y, size_t H, size_t N,
+                     size_t M, size_t K) {
+  memset(y, 0, N * K * sizeof(y[0]));
+  for (size_t i = 0; i < K; ++i) {
+    for (size_t h = 0; h < H; ++h) {
+      for (size_t j = 0; j < N; ++j) {
+        y[i * N + j] += Dot(&w[h * N * M + j * M], &x[i * H * M + h * M], M);
+      }
+    }
+  }
+}
+
+template<typename T>
+void MultiHeadMatMulVJP(const T* w, const T* x, const T* dy, T* dw, T* dx,
+                        size_t H, size_t N, size_t M, size_t K) {
+  memset(dx, 0, H * M * K * sizeof(dx[0]));
+  for (size_t i = 0; i < K; ++i) {
+    for (size_t j = 0; j < N; ++j) {
+      for (size_t h = 0; h < H; ++h) {
+        MulByConstAndAdd(dy[i * N + j], &x[i * H * M + h * M],
+                         &dw[h * N * M + j * M], M);
+        MulByConstAndAdd(dy[i * N + j], &w[h * N * M + j * M],
+                         &dx[i * H * M + h * M], M);
+      }
+    }
+  }
+}
+
 template<typename T>
 T SquaredL2(const T* x, size_t N) {
   T sum = {};
@@ -569,8 +601,8 @@ void ApplyAttentionBlock(const AttnWeights<T, TConfig>& weights,
                  activations.att_out.data(), num_tokens, kHeads, kQKVDim,
                  kSeqLen);
 
-  MatMul(weights.attn_vec_einsum_w.data(), activations.att_out.data(),
-         output, kModelDim, kHeads * kQKVDim, num_tokens);
+  MultiHeadMatMul(weights.attn_vec_einsum_w.data(), activations.att_out.data(),
+                  output, kHeads, kModelDim, kQKVDim, num_tokens);
 
   Add(activations.input.data(), output, output, num_tokens * kModelDim);
 }
@@ -588,9 +620,9 @@ void AttentionBlockVJP(const AttnWeights<T, TConfig>& weights,
   static constexpr size_t kHeads = TConfig::kHeads;
   static const T kQueryScale = 1.0 / std::sqrt(T(kQKVDim));
 
-  MatMulVJP(weights.attn_vec_einsum_w.data(), forward.att_out.data(),
-            dy, grad.attn_vec_einsum_w.data(), backward.att_out.data(),
-            kModelDim, kHeads * kQKVDim, num_tokens);
+  MultiHeadMatMulVJP(weights.attn_vec_einsum_w.data(), forward.att_out.data(),
+                     dy, grad.attn_vec_einsum_w.data(), backward.att_out.data(),
+                     kHeads, kModelDim, kQKVDim, num_tokens);
 
   MixByAttentionVJP(forward.qkv.data(), forward.att_sm.data(),
                     backward.att_out.data(), backward.qkv.data(),
