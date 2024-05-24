@@ -138,6 +138,7 @@ struct ForwardLayer {
   std::array<float, kSeqLen * (kHeads + 2) * kQKVDim> qkv;
   std::array<float, kSeqLen * kHeads * kSeqLen> att;
   std::array<float, kSeqLen * kHeads * kQKVDim> att_out;
+  std::array<float, kSeqLen * kModelDim> att_post1;
   std::array<float, kSeqLen * kModelDim> att_post2;
   std::array<float, kSeqLen * kModelDim> attention_out;
   std::array<float, kSeqLen * kModelDim> bf_pre_ffw_rms_out;

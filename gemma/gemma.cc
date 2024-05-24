@@ -757,7 +757,6 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t num_tokens, size_t layer,
     });
   }
 
-#if 0
   for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
     // TODO(szabadka) Use a single MatVecAdd like in GriffinRecurrent() after
     // rearranging the weights.
@@ -779,16 +778,6 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t num_tokens, size_t layer,
       AddFrom(head_out, layer_out, kModelDim);
     }
   }
-#else
-  for (size_t pos = 0; pos < num_tokens; ++pos) {
-    MatVecAdd<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kHeads * kQKVDim>(
-        layer_weights->attn_vec_einsum_w, 0,
-        activations.att_out.data() + pos * kHeads * kQKVDim,
-        layer_weights->attention_output_biases.data(),
-        activations.even_odd.data(),
-        activations.att_post2.data() + pos * kModelDim, pool);
-  }
-#endif
 }
 
 template <size_t kBatchSize, typename LayerT, typename TConfig>
@@ -1795,11 +1784,17 @@ void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
     }
   });
 
+  hwy::ZeroBytes(activations.att_post2.data(),
+                 num_tokens * kModelDim * sizeof(activations.att_post2[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    MatVec<kModelDim, kHeads * kQKVDim>(
-        weights.attn_vec_einsum_w, 0,
-        activations.att_out.data() + pos * kHeads * kQKVDim, even_odd,
-        activations.att_post2.data() + pos * kModelDim, pool);
+    for (size_t head = 0; head < kHeads; ++head) {
+      MatVec<kModelDim, kQKVDim>(
+          weights.attn_vec_einsum_w, head * kModelDim * kQKVDim,
+          activations.att_out.data() + pos * kHeads * kQKVDim + head * kQKVDim,
+          even_odd, activations.att_post1.data() + pos * kModelDim, pool);
+      AddFrom(activations.att_post1.data() + pos * kModelDim,
+              activations.att_post2.data() + pos * kModelDim, kModelDim);
+    }
   }
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
