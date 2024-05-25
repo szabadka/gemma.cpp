@@ -16,6 +16,9 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 
+#include "hwy/aligned_allocator.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
+
 namespace gcpp {
 
 template <typename T, class TConfig>
@@ -103,6 +106,16 @@ struct Weights {
     return layer_ptrs.layers[layer].get();
   }
 };
+
+template <typename T, typename TConfig>
+hwy::AlignedFreeUniquePtr<uint8_t[]> AllocateWeights(hwy::ThreadPool& pool) {
+  using TWeights = Weights<T, TConfig>;
+  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
+      hwy::AllocateAligned<uint8_t>(sizeof(TWeights));
+  TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
+  new (&weights->layer_ptrs) LayerPointers<T, TConfig>(pool);
+  return weights_u8;
+}
 
 }  // namespace gcpp
 

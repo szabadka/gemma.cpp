@@ -91,16 +91,6 @@ float ScaleWeights(float* data, size_t len) {
 }
 
 template <typename TConfig>
-WeightStorageT AllocateWeights(hwy::ThreadPool& pool) {
-  using TWeights = Weights<float, TConfig>;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
-      hwy::AllocateAligned<uint8_t>(sizeof(TWeights));
-  TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
-  new (&weights->layer_ptrs) LayerPointers<float, TConfig>(pool);
-  return weights_u8;
-}
-
-template <typename TConfig>
 WeightStorageT AllocateForwardPass() {
   using TForward = ForwardPass<TConfig>;
   hwy::AlignedFreeUniquePtr<uint8_t[]> forward_u8 =
@@ -128,7 +118,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
               checkpoint.path.c_str());
   }
 
-  WeightStorageT weights_u8 = AllocateWeights<TConfig>(pool);
+  WeightStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
   auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
 
   size_t scale_pos = 0;
@@ -1406,13 +1396,13 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeightsT(gcpp::Model model,
 WeightStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
-      return AllocateWeights<ConfigGemma2B>(pool);
+      return AllocateWeights<float, ConfigGemma2B>(pool);
     case Model::GEMMA_7B:
-      return AllocateWeights<ConfigGemma7B>(pool);
+      return AllocateWeights<float, ConfigGemma7B>(pool);
     case Model::GRIFFIN_2B:
-      return AllocateWeights<ConfigGriffin2B>(pool);
+      return AllocateWeights<float, ConfigGriffin2B>(pool);
     case Model::GEMMA_TINY:
-      return AllocateWeights<ConfigGemmaTiny>(pool);
+      return AllocateWeights<float, ConfigGemmaTiny>(pool);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }

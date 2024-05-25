@@ -621,53 +621,69 @@ void LogPrompt(const Prompt& prompt) {
   printf("  [context_size: %zu]\n", prompt.context_size);
 }
 
+template<typename T>
+class WeightsWrapper {
+ public:
+  WeightsWrapper() : data_(new AllWeights<T, TestConfig>()) {}
+  const AllWeights<T, TestConfig>& get() const { return *data_; }
+  AllWeights<T, TestConfig>& get() { return *data_; }
+  void clear() { memset(data_.get(), 0, sizeof(*data_)); }
+  void copy(const WeightsWrapper<T>& other) {
+    memcpy(data_.get(), other.data_.get(), sizeof(*data_));
+  }
+ private:
+  std::unique_ptr<AllWeights<T, TestConfig>> data_;
+};
+
 TEST(BackPropTest, EndToEnd) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  AllWeights<T, TestConfig> weights;
-  AllWeights<T, TestConfig> grad;
+  WeightsWrapper<T> weights;
+  WeightsWrapper<T> grad;
   AllActivations<T, TestConfig> forward;
   AllActivations<T, TestConfig> backward;
-  AllWeights<TC, TestConfig> c_weights;
+  WeightsWrapper<TC> c_weights;
   AllActivations<TC, TestConfig> c_forward;
 
-  printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
+  printf("Num weights: %zu\n", sizeof(weights.get()) / sizeof(T));
 
   ReverseSequenceSampler training_task({0, 0, 1, 1});
   std::vector<Prompt> batch = training_task.SampleBatch(10, gen);
 
   for (const Prompt& prompt : batch) {
     LogPrompt(prompt);
-    RandInit(weights, 1.0, gen);
-    ForwardPass(prompt, weights, forward);
-    memset(&grad, 0, sizeof(grad));
-    BackwardPass(prompt, weights, forward, grad, backward);
+    RandInit(weights.get(), 1.0, gen);
+    ForwardPass(prompt, weights.get(), forward);
+    grad.clear();
+    BackwardPass(prompt, weights.get(), forward, grad.get(), backward);
 
-    Complexify(weights, c_weights);
+    Complexify(weights.get(), c_weights.get());
     auto func = [&]() {
-      return ForwardPass(prompt, c_weights, c_forward);
+      return ForwardPass(prompt, c_weights.get(), c_forward);
     };
 
-    TestGradient(grad.embedder_input_embedding,
-                 c_weights.embedder_input_embedding,
+    TestGradient(grad.get().embedder_input_embedding,
+                 c_weights.get().embedder_input_embedding,
                  func,  1e-11, 1e-11, __LINE__);
-    TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
+    TestGradient(grad.get().final_norm_scale, c_weights.get().final_norm_scale,
                  func, 1e-11, 1e-11, __LINE__);
     for (int i = 0; i < TestConfig::kLayers; ++i) {
-      TestGradient(grad.layers[i].attn, c_weights.layers[i].attn, func, 1e-11);
-      TestGradient(grad.layers[i].ffw, c_weights.layers[i].ffw, func, 1e-11);
+      TestGradient(grad.get().layers[i].attn,
+                   c_weights.get().layers[i].attn, func, 1e-11);
+      TestGradient(grad.get().layers[i].ffw,
+                   c_weights.get().layers[i].ffw, func, 1e-11);
     }
   }
 }
 
 template<typename T, typename TConfig>
 T ForwardPass(const std::vector<Prompt>& batch,
-              const AllWeights<T, TConfig>& weights,
+              const WeightsWrapper<T>& weights,
               AllActivations<T, TConfig>& forward) {
   T loss = 0.0;
   for (const Prompt& prompt : batch) {
-    loss += ForwardPass(prompt, weights, forward);
+    loss += ForwardPass(prompt, weights.get(), forward);
   }
   T scale = 1.0 / batch.size();
   return loss * scale;
@@ -676,20 +692,20 @@ T ForwardPass(const std::vector<Prompt>& batch,
 template<typename T, typename TConfig>
 T ForwardPass(T learning_rate,
               const std::vector<Prompt>& batch,
-              const AllWeights<T, TConfig>& weights,
-              const AllWeights<T, TConfig>& grad,
-              AllWeights<T, TestConfig>& tmp,
+              const WeightsWrapper<T>& weights,
+              const WeightsWrapper<T>& grad,
+              WeightsWrapper<T>& tmp,
               AllActivations<T, TConfig>& forward) {
-  memcpy(&tmp, &weights, sizeof(tmp));
+  tmp.copy(weights);
   const T scale = -learning_rate / batch.size();
-  MulByConstAndAdd(scale, grad, tmp);
+  MulByConstAndAdd(scale, grad.get(), tmp.get());
   return ForwardPass(batch, tmp, forward);
 }
 
 template<typename T, typename TConfig>
-T FindOptimalUpdate(const AllWeights<T, TConfig>& grad,
-                    AllWeights<T, TestConfig>& weights,
-                    AllWeights<T, TestConfig>& tmp,
+T FindOptimalUpdate(const WeightsWrapper<T>& grad,
+                    WeightsWrapper<T>& weights,
+                    WeightsWrapper<T>& tmp,
                     AllActivations<T, TConfig>& forward,
                     const std::vector<Prompt>& batch,
                     T loss, T initial_learning_rate) {
@@ -714,7 +730,7 @@ T FindOptimalUpdate(const AllWeights<T, TConfig>& grad,
     lr0 = lr1;
   }
   const T scale = -lr0 / batch.size();
-  MulByConstAndAdd(scale, grad, weights);
+  MulByConstAndAdd(scale, grad.get(), weights.get());
   return lr0;
 }
 
@@ -722,19 +738,19 @@ TEST(BackProptest, Convergence) {
   std::mt19937 gen(42);
   using T = float;
   using TC = std::complex<double>;
-  AllWeights<T, TestConfig> weights;
-  AllWeights<T, TestConfig> grad;
-  AllWeights<T, TestConfig> tmp;
+  WeightsWrapper<T> weights;
+  WeightsWrapper<T> grad;
+  WeightsWrapper<T> tmp;
   AllActivations<T, TestConfig> forward;
   AllActivations<T, TestConfig> backward;
-  AllWeights<TC, TestConfig> c_weights;
+  WeightsWrapper<TC> c_weights;
   AllActivations<TC, TestConfig> c_forward;
   constexpr size_t kBatchSize = 10;
   ReverseSequenceSampler training_task({0, 0, 0, 1, 1});
   T learning_rate = 0.01;
 
   printf("Num weights: %zu\n", sizeof(weights) / sizeof(T));
-  RandInit(weights, T(1.0), gen);
+  RandInit(weights.get(), T(1.0), gen);
 
   printf("Sample batch:\n");
   for (size_t i = 0; i < 10; ++i) {
@@ -746,31 +762,32 @@ TEST(BackProptest, Convergence) {
   size_t step = 0;
   while (!stop) {
     T loss = 0.0;
-    memset(&grad, 0, sizeof(grad));
+    grad.clear();
     std::mt19937 sgen(42);
     std::vector<Prompt> batch = training_task.SampleBatch(kBatchSize, sgen);
     for (const Prompt& prompt : batch) {
-      loss += ForwardPass(prompt, weights, forward);
-      BackwardPass(prompt, weights, forward, grad, backward);
+      loss += ForwardPass(prompt, weights.get(), forward);
+      BackwardPass(prompt, weights.get(), forward, grad.get(), backward);
     }
 
     if (step % 200 == 0) {
       printf("Checking gradient...\n");
-      Complexify(weights, c_weights);
+      Complexify(weights.get(), c_weights.get());
       auto func = [&]() {
         TC scale = batch.size();
         return ForwardPass(batch, c_weights, c_forward) * scale;
       };
 
-      TestGradient(grad.embedder_input_embedding,
-                   c_weights.embedder_input_embedding,
+      TestGradient(grad.get().embedder_input_embedding,
+                   c_weights.get().embedder_input_embedding,
                    func,  2e-3f, 4e-3f, __LINE__);
-      TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
+      TestGradient(grad.get().final_norm_scale,
+                   c_weights.get().final_norm_scale,
                    func, 2e-3f, 2e-3f, __LINE__);
       for (int i = 0; i < TestConfig::kLayers; ++i) {
-        TestGradient(grad.layers[i].attn, c_weights.layers[i].attn,
+        TestGradient(grad.get().layers[i].attn, c_weights.get().layers[i].attn,
                      func, 2e-3f);
-        TestGradient(grad.layers[i].ffw, c_weights.layers[i].ffw,
+        TestGradient(grad.get().layers[i].ffw, c_weights.get().layers[i].ffw,
                      func, 2e-3f);
       }
     }

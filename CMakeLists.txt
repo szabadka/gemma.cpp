@@ -104,7 +104,6 @@ if (GEMMA_ENABLE_TESTS)
 set(GEMMA_TEST_FILES
   gemma/ops_test.cc
   gemma/gemma_test.cc
-  gemma/gradient_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
@@ -124,7 +123,7 @@ endforeach ()
 
 add_executable(backprop_test gemma/backprop_test.cc gemma/backprop_scalar.h)
 target_include_directories(backprop_test PRIVATE .)
-target_link_libraries(backprop_test PRIVATE GTest::gtest_main)
+target_link_libraries(backprop_test PRIVATE GTest::gtest_main hwy hwy_contrib)
 
 endif()  # GEMMA_ENABLE_TESTS
 

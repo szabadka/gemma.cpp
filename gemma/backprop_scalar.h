@@ -26,6 +26,8 @@
 #include <complex>
 #include <vector>
 
+#include "gemma/weights.h"
+
 namespace gcpp {
 
 template<typename T, size_t N>
