@@ -23,7 +23,7 @@ namespace gcpp {
 
 template <typename T, class TConfig>
 struct Layer {
-  Layer() = default;
+  Layer() {}
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kKVHeads = TConfig::kKVHeads;
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -72,6 +72,16 @@ struct Layer {
   std::array<T, kFFBiases ? kModelDim : 0> ffw_output_biases;
 };
 
+template<typename T, typename TConfig>
+void ZeroInit(Layer<T, TConfig>& layer) {
+  memset(&layer, 0, sizeof(layer));
+}
+
+template<typename T, typename TConfig>
+void Copy(Layer<T, TConfig>& dst, const Layer<T, TConfig>& src) {
+  memcpy(&dst, &src, sizeof(src));
+}
+
 // Array instead of single large allocation for parallel mem init. Split out of
 // Weights so that only these pointers are initialized.
 template <typename T, class TConfig>
@@ -116,6 +126,27 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> AllocateWeights(hwy::ThreadPool& pool) {
   new (&weights->layer_ptrs) LayerPointers<T, TConfig>(pool);
   return weights_u8;
 }
+
+template<typename T, typename TConfig>
+void ZeroInit(Weights<T, TConfig>& w) {
+  memset(&w.embedder_input_embedding, 0, sizeof(w.embedder_input_embedding));
+  memset(&w.final_norm_scale, 0, sizeof(w.final_norm_scale));
+  for (int i = 0; i < TConfig::kLayers; ++i) {
+    ZeroInit(*w.GetLayer(i));
+  }
+}
+
+template<typename T, typename TConfig>
+void Copy(Weights<T, TConfig>& dst, const Weights<T, TConfig>& src) {
+  memcpy(&dst.embedder_input_embedding, &src.embedder_input_embedding,
+         sizeof(src.embedder_input_embedding));
+  memcpy(&dst.final_norm_scale, &src.final_norm_scale,
+         sizeof(src.final_norm_scale));
+  for (int i = 0; i < TConfig::kLayers; ++i) {
+    Copy(*dst.GetLayer(i), *src.GetLayer(i));
+  }
+}
+
 
 }  // namespace gcpp
 

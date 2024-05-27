@@ -417,27 +417,41 @@ struct TestConfig {
   static constexpr int kQKVDim = 12;
   static constexpr int kFFHiddenDim = 48;
   static constexpr int kLayers = 2;
+
+  static constexpr int kKVHeads = 1;
+  static constexpr int kConv1dWidth = 0;
+  static constexpr bool kFFBiases = false;
+  static constexpr bool kSoftmaxAttnOutputBiases = false;
+  static constexpr int kGemmaLayers = kLayers;
+  static constexpr int kGriffinLayers = 0;
+  static constexpr int kNumTensorScales = 0;
 };
 
 template<typename T, typename TConfig>
-void RandInit(AttnWeights<T, TConfig>& w, T stddev, std::mt19937& gen) {
+void RandInit(Layer<T, TConfig>& w, T stddev, std::mt19937& gen) {
   RandInit(w.pre_attention_norm_scale, stddev, gen);
   RandInit(w.attn_vec_einsum_w, stddev, gen);
   RandInit(w.qkv_einsum_w, stddev, gen);
+  RandInit(w.pre_ffw_norm_scale, stddev, gen);
+  RandInit(w.gating_einsum_w, stddev, gen);
+  RandInit(w.linear_w, stddev, gen);
 }
 
 template<typename T, typename U, typename TConfig>
-void Complexify(const AttnWeights<T, TConfig>& w,
-                AttnWeights<std::complex<U>, TConfig>& c_w) {
+void Complexify(const Layer<T, TConfig>& w,
+                Layer<std::complex<U>, TConfig>& c_w) {
   Complexify(w.pre_attention_norm_scale, c_w.pre_attention_norm_scale);
   Complexify(w.attn_vec_einsum_w, c_w.attn_vec_einsum_w);
   Complexify(w.qkv_einsum_w, c_w.qkv_einsum_w);
+  Complexify(w.pre_ffw_norm_scale, c_w.pre_ffw_norm_scale);
+  Complexify(w.gating_einsum_w, c_w.gating_einsum_w);
+  Complexify(w.linear_w, c_w.linear_w);
 }
 
 template<typename T, typename U, typename TConfig, typename FUNC>
-void TestGradient(const AttnWeights<T, TConfig>& grad,
-                  AttnWeights<std::complex<U>, TConfig>& c_weights,
-                  FUNC func, T max_err) {
+void TestAttnGradient(const Layer<T, TConfig>& grad,
+                      Layer<std::complex<U>, TConfig>& c_weights,
+                      FUNC func, T max_err) {
   TestGradient(grad.pre_attention_norm_scale,
                c_weights.pre_attention_norm_scale,
                func, max_err, max_err, __LINE__);
@@ -452,11 +466,11 @@ TEST(BackPropTest, AttnBlockVJP) {
   using T = double;
   using TC = std::complex<T>;
   const size_t kOutputSize = TestConfig::kSeqLen * TestConfig::kModelDim;
-  AttnWeights<T, TestConfig> weights;
-  AttnWeights<T, TestConfig> grad;
+  Layer<T, TestConfig> weights;
+  Layer<T, TestConfig> grad;
   AttnActivations<T, TestConfig> forward;
   AttnActivations<T, TestConfig> backward = {};
-  AttnWeights<TC, TestConfig> c_weights;
+  Layer<TC, TestConfig> c_weights;
   AttnActivations<TC, TestConfig> c_forward;
   std::array<T, kOutputSize> y;
   std::array<T, kOutputSize> dy;
@@ -478,29 +492,14 @@ TEST(BackPropTest, AttnBlockVJP) {
     AttentionBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
     TestGradient(backward.input, c_forward.input, func, 1e-11, 1e-11,
                  __LINE__);
-    TestGradient(grad, c_weights, func, 1e-11);
+    TestAttnGradient(grad, c_weights, func, 1e-11);
   }
 }
 
-template<typename T, typename TConfig>
-void RandInit(FFWWeights<T, TConfig>& w, T stddev, std::mt19937& gen) {
-  RandInit(w.pre_ffw_norm_scale, stddev, gen);
-  RandInit(w.gating_einsum_w, stddev, gen);
-  RandInit(w.linear_w, stddev, gen);
-}
-
-template<typename T, typename U, typename TConfig>
-void Complexify(const FFWWeights<T, TConfig>& w,
-                FFWWeights<std::complex<U>, TConfig>& c_w) {
-  Complexify(w.pre_ffw_norm_scale, c_w.pre_ffw_norm_scale);
-  Complexify(w.gating_einsum_w, c_w.gating_einsum_w);
-  Complexify(w.linear_w, c_w.linear_w);
-}
-
 template<typename T, typename U, typename TConfig, typename FUNC>
-void TestGradient(const FFWWeights<T, TConfig>& grad,
-                  FFWWeights<std::complex<U>, TConfig>& c_weights,
-                  FUNC func, T max_err) {
+void TestFFWGradient(const Layer<T, TConfig>& grad,
+                     Layer<std::complex<U>, TConfig>& c_weights,
+                     FUNC func, T max_err) {
   TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
                func, max_err, max_err, __LINE__);
   TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
@@ -514,11 +513,11 @@ TEST(BackPropTest, FFWBlockVJP) {
   using T = double;
   using TC = std::complex<T>;
   const size_t kOutputSize = TestConfig::kSeqLen * TestConfig::kModelDim;
-  FFWWeights<T, TestConfig> weights;
-  FFWWeights<T, TestConfig> grad;
+  Layer<T, TestConfig> weights;
+  Layer<T, TestConfig> grad;
   FFWActivations<T, TestConfig> forward;
   FFWActivations<T, TestConfig> backward = {};
-  FFWWeights<TC, TestConfig> c_weights;
+  Layer<TC, TestConfig> c_weights;
   FFWActivations<TC, TestConfig> c_forward;
   std::array<T, kOutputSize> y;
   std::array<T, kOutputSize> dy;
@@ -540,30 +539,28 @@ TEST(BackPropTest, FFWBlockVJP) {
     FFWBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
     TestGradient(backward.input, c_forward.input, func, 1e-11, 1e-11,
                  __LINE__);
-    TestGradient(grad, c_weights, func, 1e-11);
+    TestFFWGradient(grad, c_weights, func, 1e-11);
   }
 }
 
 template<typename T, typename TConfig>
-void RandInit(AllWeights<T, TConfig>& w, T stddev, std::mt19937& gen) {
+void RandInit(Weights<T, TConfig>& w, T stddev, std::mt19937& gen) {
   static constexpr size_t kLayers = TConfig::kLayers;
   RandInit(w.embedder_input_embedding, stddev, gen);
   RandInit(w.final_norm_scale, stddev, gen);
   for (size_t i = 0; i < kLayers; ++i) {
-    RandInit(w.layers[i].attn, stddev, gen);
-    RandInit(w.layers[i].ffw, stddev, gen);
+    RandInit(*w.GetLayer(i), stddev, gen);
   }
 }
 
 template<typename T, typename U, typename TConfig>
-void Complexify(const AllWeights<T, TConfig>& w,
-                AllWeights<std::complex<U>, TConfig>& c_w) {
+void Complexify(const Weights<T, TConfig>& w,
+                Weights<std::complex<U>, TConfig>& c_w) {
   static constexpr size_t kLayers = TConfig::kLayers;
   Complexify(w.embedder_input_embedding, c_w.embedder_input_embedding);
   Complexify(w.final_norm_scale, c_w.final_norm_scale);
   for (size_t i = 0; i < kLayers; ++i) {
-    Complexify(w.layers[i].attn, c_w.layers[i].attn);
-    Complexify(w.layers[i].ffw, c_w.layers[i].ffw);
+    Complexify(*w.GetLayer(i), *c_w.GetLayer(i));
   }
 }
 
@@ -621,29 +618,35 @@ void LogPrompt(const Prompt& prompt) {
   printf("  [context_size: %zu]\n", prompt.context_size);
 }
 
-template<typename T>
+template<typename T, typename TConfig>
 class WeightsWrapper {
  public:
-  WeightsWrapper() : data_(new AllWeights<T, TestConfig>()) {}
-  const AllWeights<T, TestConfig>& get() const { return *data_; }
-  AllWeights<T, TestConfig>& get() { return *data_; }
-  void clear() { memset(data_.get(), 0, sizeof(*data_)); }
-  void copy(const WeightsWrapper<T>& other) {
-    memcpy(data_.get(), other.data_.get(), sizeof(*data_));
+  WeightsWrapper()
+      : pool_(0), data_(AllocateWeights<T, TConfig>(pool_)),
+        weights_(reinterpret_cast<Weights<T, TConfig>*>(data_.get())) {}
+
+  const Weights<T, TConfig>& get() const { return *weights_; }
+  Weights<T, TConfig>& get() { return *weights_; }
+  void clear() { ZeroInit(get()); }
+  void copy(const WeightsWrapper<T, TConfig>& other) {
+    Copy(get(), other.get());
   }
+
  private:
-  std::unique_ptr<AllWeights<T, TestConfig>> data_;
+  hwy::ThreadPool pool_;
+  hwy::AlignedFreeUniquePtr<uint8_t[]> data_;
+  Weights<T, TConfig>* weights_;
 };
 
 TEST(BackPropTest, EndToEnd) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  WeightsWrapper<T> weights;
-  WeightsWrapper<T> grad;
+  WeightsWrapper<T, TestConfig> weights;
+  WeightsWrapper<T, TestConfig> grad;
   AllActivations<T, TestConfig> forward;
   AllActivations<T, TestConfig> backward;
-  WeightsWrapper<TC> c_weights;
+  WeightsWrapper<TC, TestConfig> c_weights;
   AllActivations<TC, TestConfig> c_forward;
 
   printf("Num weights: %zu\n", sizeof(weights.get()) / sizeof(T));
@@ -669,17 +672,17 @@ TEST(BackPropTest, EndToEnd) {
     TestGradient(grad.get().final_norm_scale, c_weights.get().final_norm_scale,
                  func, 1e-11, 1e-11, __LINE__);
     for (int i = 0; i < TestConfig::kLayers; ++i) {
-      TestGradient(grad.get().layers[i].attn,
-                   c_weights.get().layers[i].attn, func, 1e-11);
-      TestGradient(grad.get().layers[i].ffw,
-                   c_weights.get().layers[i].ffw, func, 1e-11);
+      TestAttnGradient(*grad.get().GetLayer(i),
+                       *c_weights.get().GetLayer(i), func, 1e-11);
+      TestFFWGradient(*grad.get().GetLayer(i),
+                      *c_weights.get().GetLayer(i), func, 1e-11);
     }
   }
 }
 
 template<typename T, typename TConfig>
 T ForwardPass(const std::vector<Prompt>& batch,
-              const WeightsWrapper<T>& weights,
+              const WeightsWrapper<T, TConfig>& weights,
               AllActivations<T, TConfig>& forward) {
   T loss = 0.0;
   for (const Prompt& prompt : batch) {
@@ -692,9 +695,9 @@ T ForwardPass(const std::vector<Prompt>& batch,
 template<typename T, typename TConfig>
 T ForwardPass(T learning_rate,
               const std::vector<Prompt>& batch,
-              const WeightsWrapper<T>& weights,
-              const WeightsWrapper<T>& grad,
-              WeightsWrapper<T>& tmp,
+              const WeightsWrapper<T, TConfig>& weights,
+              const WeightsWrapper<T, TConfig>& grad,
+              WeightsWrapper<T, TConfig>& tmp,
               AllActivations<T, TConfig>& forward) {
   tmp.copy(weights);
   const T scale = -learning_rate / batch.size();
@@ -703,9 +706,9 @@ T ForwardPass(T learning_rate,
 }
 
 template<typename T, typename TConfig>
-T FindOptimalUpdate(const WeightsWrapper<T>& grad,
-                    WeightsWrapper<T>& weights,
-                    WeightsWrapper<T>& tmp,
+T FindOptimalUpdate(const WeightsWrapper<T, TConfig>& grad,
+                    WeightsWrapper<T, TConfig>& weights,
+                    WeightsWrapper<T, TConfig>& tmp,
                     AllActivations<T, TConfig>& forward,
                     const std::vector<Prompt>& batch,
                     T loss, T initial_learning_rate) {
@@ -738,12 +741,12 @@ TEST(BackProptest, Convergence) {
   std::mt19937 gen(42);
   using T = float;
   using TC = std::complex<double>;
-  WeightsWrapper<T> weights;
-  WeightsWrapper<T> grad;
-  WeightsWrapper<T> tmp;
+  WeightsWrapper<T, TestConfig> weights;
+  WeightsWrapper<T, TestConfig> grad;
+  WeightsWrapper<T, TestConfig> tmp;
   AllActivations<T, TestConfig> forward;
   AllActivations<T, TestConfig> backward;
-  WeightsWrapper<TC> c_weights;
+  WeightsWrapper<TC, TestConfig> c_weights;
   AllActivations<TC, TestConfig> c_forward;
   constexpr size_t kBatchSize = 10;
   ReverseSequenceSampler training_task({0, 0, 0, 1, 1});
@@ -785,10 +788,10 @@ TEST(BackProptest, Convergence) {
                    c_weights.get().final_norm_scale,
                    func, 2e-3f, 2e-3f, __LINE__);
       for (int i = 0; i < TestConfig::kLayers; ++i) {
-        TestGradient(grad.get().layers[i].attn, c_weights.get().layers[i].attn,
-                     func, 2e-3f);
-        TestGradient(grad.get().layers[i].ffw, c_weights.get().layers[i].ffw,
-                     func, 2e-3f);
+        TestAttnGradient(*grad.get().GetLayer(i),
+                         *c_weights.get().GetLayer(i), func, 2e-3f);
+        TestFFWGradient(*grad.get().GetLayer(i),
+                        *c_weights.get().GetLayer(i), func, 2e-3f);
       }
     }
 

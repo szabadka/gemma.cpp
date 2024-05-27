@@ -367,75 +367,25 @@ struct AllActivations {
   std::array<T, kSeqLen * kVocabSize> probs;
 };
 
-template <typename T, typename TConfig>
-struct AttnWeights {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-
-  std::array<T, kModelDim> pre_attention_norm_scale;
-  std::array<T, kHeads * kQKVDim * kModelDim> attn_vec_einsum_w;
-  std::array<T, (kHeads + 2) * kQKVDim * kModelDim> qkv_einsum_w;
-};
-
 template<typename T, typename TConfig>
-void MulByConstAndAdd(T c, const AttnWeights<T, TConfig>& x,
-                      AttnWeights<T, TConfig>& out) {
+void MulByConstAndAdd(T c, const Layer<T, TConfig>& x,
+                      Layer<T, TConfig>& out) {
   MulByConstAndAdd(c, x.pre_attention_norm_scale, out.pre_attention_norm_scale);
   MulByConstAndAdd(c, x.attn_vec_einsum_w, out.attn_vec_einsum_w);
   MulByConstAndAdd(c, x.qkv_einsum_w, out.qkv_einsum_w);
-}
-
-template <typename T, typename TConfig>
-struct FFWWeights {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-
-  std::array<T, kModelDim> pre_ffw_norm_scale;
-  std::array<T, 2 * kFFHiddenDim * kModelDim> gating_einsum_w;
-  std::array<T, kModelDim * kFFHiddenDim> linear_w;
-};
-
-template<typename T, typename TConfig>
-void MulByConstAndAdd(T c, const FFWWeights<T, TConfig>& x,
-                      FFWWeights<T, TConfig>& out) {
   MulByConstAndAdd(c, x.pre_ffw_norm_scale, out.pre_ffw_norm_scale);
   MulByConstAndAdd(c, x.gating_einsum_w, out.gating_einsum_w);
   MulByConstAndAdd(c, x.linear_w, out.linear_w);
 }
 
-template <typename T, typename TConfig>
-struct LayerWeights {
-  AttnWeights<T, TConfig> attn;
-  FFWWeights<T, TConfig> ffw;
-};
-
 template<typename T, typename TConfig>
-void MulByConstAndAdd(T c, const LayerWeights<T, TConfig>& x,
-                      LayerWeights<T, TConfig>& out) {
-  MulByConstAndAdd(c, x.attn, out.attn);
-  MulByConstAndAdd(c, x.ffw, out.ffw);
-}
-
-template <typename T, typename TConfig>
-struct AllWeights {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kLayers = TConfig::kLayers;
-
-  std::array<T, kVocabSize * kModelDim> embedder_input_embedding;
-  std::array<T, kModelDim> final_norm_scale;
-  std::array<LayerWeights<T, TConfig>, kLayers> layers;
-};
-
-template<typename T, typename TConfig>
-void MulByConstAndAdd(T c, const AllWeights<T, TConfig>& x,
-                      AllWeights<T, TConfig>& out) {
+void MulByConstAndAdd(T c, const Weights<T, TConfig>& x,
+                      Weights<T, TConfig>& out) {
   static constexpr size_t kLayers = TConfig::kLayers;
   MulByConstAndAdd(c, x.embedder_input_embedding, out.embedder_input_embedding);
   MulByConstAndAdd(c, x.final_norm_scale, out.final_norm_scale);
   for (size_t i = 0; i < kLayers; ++i) {
-    MulByConstAndAdd(c, x.layers[i], out.layers[i]);
+    MulByConstAndAdd(c, *x.GetLayer(i), *out.GetLayer(i));
   }
 }
 
@@ -566,7 +516,7 @@ void MixByAttentionVJP(const T* qkv, const T* attention, const T* doutput,
 }
 
 template<typename T, typename TConfig>
-void ApplyAttentionBlock(const AttnWeights<T, TConfig>& weights,
+void ApplyAttentionBlock(const Layer<T, TConfig>& weights,
                          AttnActivations<T, TConfig>& activations,
                          size_t num_tokens, T* output) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -610,10 +560,10 @@ void ApplyAttentionBlock(const AttnWeights<T, TConfig>& weights,
 }
 
 template<typename T, typename TConfig>
-void AttentionBlockVJP(const AttnWeights<T, TConfig>& weights,
+void AttentionBlockVJP(const Layer<T, TConfig>& weights,
                        const AttnActivations<T, TConfig>& forward,
                        const T* dy,
-                       AttnWeights<T, TConfig>& grad,
+                       Layer<T, TConfig>& grad,
                        AttnActivations<T, TConfig>& backward,
                        size_t num_tokens) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -662,7 +612,7 @@ void AttentionBlockVJP(const AttnWeights<T, TConfig>& weights,
 }
 
 template<typename T, typename TConfig>
-void ApplyFFWBlock(const FFWWeights<T, TConfig>& weights,
+void ApplyFFWBlock(const Layer<T, TConfig>& weights,
                    FFWActivations<T, TConfig>& activations,
                    size_t num_tokens, T* output) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -686,10 +636,10 @@ void ApplyFFWBlock(const FFWWeights<T, TConfig>& weights,
 }
 
 template<typename T, typename TConfig>
-void FFWBlockVJP(const FFWWeights<T, TConfig>& weights,
+void FFWBlockVJP(const Layer<T, TConfig>& weights,
                  const FFWActivations<T, TConfig>& forward,
                  const T* dy,
-                 FFWWeights<T, TConfig>& grad,
+                 Layer<T, TConfig>& grad,
                  FFWActivations<T, TConfig>& backward,
                  size_t num_tokens) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -716,22 +666,22 @@ void FFWBlockVJP(const FFWWeights<T, TConfig>& weights,
 }
 
 template<typename T, typename TConfig>
-void ApplyLayer(const LayerWeights<T, TConfig>& weights,
+void ApplyLayer(const Layer<T, TConfig>& weights,
                 LayerActivations<T, TConfig>& forward, size_t num_tokens,
                 T* output) {
-  ApplyAttentionBlock(weights.attn, forward.attn, num_tokens,
+  ApplyAttentionBlock(weights, forward.attn, num_tokens,
                       forward.ffw.input.data());
-  ApplyFFWBlock(weights.ffw, forward.ffw, num_tokens, output);
+  ApplyFFWBlock(weights, forward.ffw, num_tokens, output);
 }
 
 template<typename T, typename TConfig>
-void LayerVJP(const LayerWeights<T, TConfig>& weights,
+void LayerVJP(const Layer<T, TConfig>& weights,
               const LayerActivations<T, TConfig>& forward,  const T* dy,
-              LayerWeights<T, TConfig>& grad,
+              Layer<T, TConfig>& grad,
               LayerActivations<T, TConfig>& backward, size_t num_tokens) {
-  FFWBlockVJP(weights.ffw, forward.ffw, dy, grad.ffw, backward.ffw, num_tokens);
-  AttentionBlockVJP(weights.attn, forward.attn, backward.ffw.input.data(),
-                    grad.attn, backward.attn, num_tokens);
+  FFWBlockVJP(weights, forward.ffw, dy, grad, backward.ffw, num_tokens);
+  AttentionBlockVJP(weights, forward.attn, backward.ffw.input.data(),
+                    grad, backward.attn, num_tokens);
 }
 
 struct Prompt {
@@ -769,7 +719,7 @@ void CrossEntropyLossGrad(const T* x, T* dx, const Prompt& prompt, size_t V) {
 
 template<typename T, typename TConfig>
 T ForwardPass(const Prompt& prompt,
-              const AllWeights<T, TConfig>& weights,
+              const Weights<T, TConfig>& weights,
               AllActivations<T, TConfig>& forward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
@@ -784,7 +734,7 @@ T ForwardPass(const Prompt& prompt,
     T* output = layer + 1 < kLayers ?
                 forward.layers[layer + 1].attn.input.data() :
                 forward.final_layer_output.data();
-    ApplyLayer(weights.layers[layer], forward.layers[layer], num_tokens,
+    ApplyLayer(*weights.GetLayer(layer), forward.layers[layer], num_tokens,
                output);
   }
 
@@ -806,9 +756,9 @@ T ForwardPass(const Prompt& prompt,
 
 template<typename T, typename TConfig>
 void BackwardPass(const Prompt& prompt,
-                  const AllWeights<T, TConfig>& weights,
+                  const Weights<T, TConfig>& weights,
                   const AllActivations<T, TConfig>& forward,
-                  AllWeights<T, TConfig>& grad,
+                  Weights<T, TConfig>& grad,
                   AllActivations<T, TConfig>& backward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
@@ -838,11 +788,11 @@ void BackwardPass(const Prompt& prompt,
              backward.final_layer_output.data(), kModelDim, num_tokens);
 
   for (int layer = static_cast<int>(kLayers) - 1; layer >= 0; --layer) {
-    T* next_layer_grad =
-        layer + 1 < kLayers ? backward.layers[layer + 1].attn.input.data()
-                            : backward.final_layer_output.data();
-    LayerVJP(weights.layers[layer], forward.layers[layer], next_layer_grad,
-             grad.layers[layer], backward.layers[layer], num_tokens);
+    T* next_layer_grad = layer + 1 < kLayers
+                         ? backward.layers[layer + 1].attn.input.data()
+                         : backward.final_layer_output.data();
+    LayerVJP(*weights.GetLayer(layer), forward.layers[layer], next_layer_grad,
+             *grad.GetLayer(layer), backward.layers[layer], num_tokens);
   }
 
   const T kEmbScaling = std::sqrt(kModelDim);
