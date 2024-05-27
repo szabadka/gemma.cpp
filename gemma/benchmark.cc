@@ -197,7 +197,7 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     float entropy =
         ComputeCrossEntropy(model, num_tokens, prompt_slice, kv_cache, pool,
                             app.verbosity);
-#elif 0
+#elif 1
     gcpp::WeightStorageT forward = AllocateForwardPass(model_type);
     float entropy = CrossEntropyLossForwardStep(
         prompt_slice, 1, model_type, model.Weights(), forward, pool);

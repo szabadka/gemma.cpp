@@ -1249,9 +1249,9 @@ template <class TConfig, class Func>
 void ForEachTensor(Weights<float, TConfig>* weights,
                    CompressedWeights<TConfig>* c_weights, Func& func) {
   func("c_embedding",
-       weights ? weights->embedder_input_embedding.data() : nullptr,
+       weights ? &weights->embedder_input_embedding : nullptr,
        c_weights ? &c_weights->embedder_input_embedding : nullptr );
-  func("c_final_norm", weights ? weights->final_norm_scale.data() : nullptr,
+  func("c_final_norm", weights ? &weights->final_norm_scale : nullptr,
        c_weights ? &c_weights->final_norm_scale : nullptr);
 
   char name_buf[16];
@@ -1264,15 +1264,12 @@ void ForEachTensor(Weights<float, TConfig>* weights,
 
 #define CALL_FUNC(name, member)                                \
   snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx); \
-  func(name_buf, layer ? layer->member.data() : nullptr,       \
+  func(name_buf, layer ? &layer->member : nullptr,       \
        layer_weights ? &layer_weights->member : nullptr)
 
-    CALL_FUNC("pre_ff_ns", pre_ffw_norm_scale);
-    CALL_FUNC("gating_ein", gating_einsum_w);
-    CALL_FUNC("linear_w", linear_w);
     if (type == LayerAttentionType::kGemma) {
-      CALL_FUNC("qkv_ein", qkv_einsum_w);
       CALL_FUNC("att_ein", attn_vec_einsum_w);
+      CALL_FUNC("qkv_ein", qkv_einsum_w);
     } else {
       CALL_FUNC("gr_lin_x_w", griffin.linear_x_w);
       CALL_FUNC("gr_lin_x_b", griffin.linear_x_biases);
@@ -1286,7 +1283,10 @@ void ForEachTensor(Weights<float, TConfig>* weights,
       CALL_FUNC("gr_gate_b", griffin.gate_biases);
       CALL_FUNC("gr_a", griffin.a);
     }
+    CALL_FUNC("gating_ein", gating_einsum_w);
+    CALL_FUNC("linear_w", linear_w);
     CALL_FUNC("pre_att_ns", pre_attention_norm_scale);
+    CALL_FUNC("pre_ff_ns", pre_ffw_norm_scale);
 
     if (TConfig::kFFBiases) {
       CALL_FUNC("ffw_gat_b", ffw_gating_biases);
@@ -1434,54 +1434,6 @@ WeightStorageT AllocateBackwardPassT(gcpp::Model model) {
   }
 }
 
-template <class TConfig>
-void CompressWeights(const Path& weights_path,
-                     const Path& compressed_weights_path,
-                     hwy::ThreadPool& pool) {
-  if (!weights_path.Exists()) {
-    HWY_ABORT("The model weights file '%s' does not exist.",
-              weights_path.path.c_str());
-  }
-
-  // Allocate compressed weights.
-  using CWeights = CompressedWeights<TConfig>;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> c_weights_u8 =
-      hwy::AllocateAligned<uint8_t>(sizeof(CWeights));
-  CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
-  new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
-
-  // Get weights, compress, and store.
-  const bool scale_for_compression = TConfig::kNumTensorScales > 0;
-  const hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
-      LoadWeights<TConfig>(weights_path, pool, scale_for_compression);
-  Weights<float, TConfig>* weights =
-      reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
-  Compressor compressor(pool);
-  ForEachTensor<TConfig>(weights, c_weights, compressor);
-  compressor.AddScales(weights->scales.data(), weights->scales.size());
-  compressor.WriteAll(pool, compressed_weights_path);
-
-  weights->layer_ptrs.~LayerPointers<float, TConfig>();
-  c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
-}
-
-void CompressWeightsT(gcpp::Model model, const Path& weights,
-                      const Path& compressed_weights, hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      CompressWeights<ConfigGemma2B>(weights, compressed_weights, pool);
-      break;
-    case Model::GEMMA_7B:
-      CompressWeights<ConfigGemma7B>(weights, compressed_weights, pool);
-      break;
-    case Model::GRIFFIN_2B:
-      CompressWeights<ConfigGriffin2B>(weights, compressed_weights, pool);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 void LogVec(const char* name, const float* data, size_t len) {
   float minval = std::numeric_limits<float>::max();
   float maxval = std::numeric_limits<float>::min();
@@ -1499,9 +1451,9 @@ void LogVec(const char* name, const float* data, size_t len) {
 class WeightLogger {
  public:
   template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, const float* data,
+  void operator()(const char* name, const std::array<float, kCapacity>* data,
                   CompressedArray<MatT, kCapacity>* compressed) {
-    LogVec(name, data, kCapacity);
+    LogVec(name, data->data(), kCapacity);
     total_weights += kCapacity;
   }
   size_t total_weights = 0;
@@ -1530,20 +1482,112 @@ void LogWeightStatsT(gcpp::Model model, const WeightStorageT& weights) {
   }
 }
 
+template <class TConfig>
+void CompressWeights(const Path& weights_path,
+                     const Path& compressed_weights_path,
+                     hwy::ThreadPool& pool) {
+  if (!weights_path.Exists()) {
+    HWY_ABORT("The model weights file '%s' does not exist.",
+              weights_path.path.c_str());
+  }
+
+  // Allocate compressed weights.
+  using CWeights = CompressedWeights<TConfig>;
+  hwy::AlignedFreeUniquePtr<uint8_t[]> c_weights_u8 =
+      hwy::AllocateAligned<uint8_t>(sizeof(CWeights));
+  CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
+  new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
+
+  // Get weights, compress, and store.
+  const bool scale_for_compression = TConfig::kNumTensorScales > 0;
+  const hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
+      LoadWeights<TConfig>(weights_path, pool, scale_for_compression);
+  LogWeightStats<TConfig>(weights_u8);
+  Weights<float, TConfig>* weights =
+      reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
+  Compressor compressor(pool);
+  ForEachTensor<TConfig>(weights, c_weights, compressor);
+  compressor.AddScales(weights->scales.data(), weights->scales.size());
+  compressor.WriteAll(pool, compressed_weights_path);
+
+  weights->layer_ptrs.~LayerPointers<float, TConfig>();
+  c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
+}
+
+void CompressWeightsT(gcpp::Model model, const Path& weights,
+                      const Path& compressed_weights, hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      CompressWeights<ConfigGemma2B>(weights, compressed_weights, pool);
+      break;
+    case Model::GEMMA_7B:
+      CompressWeights<ConfigGemma7B>(weights, compressed_weights, pool);
+      break;
+    case Model::GRIFFIN_2B:
+      CompressWeights<ConfigGriffin2B>(weights, compressed_weights, pool);
+      break;
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
+
+template <class TConfig>
+void DecompressWeights(const Path& weights_path,
+                       const Path& compressed_weights_path,
+                       hwy::ThreadPool& pool) {
+  if (!compressed_weights_path.Exists()) {
+    HWY_ABORT("The compressed model weights file '%s' does not exist.",
+              weights_path.path.c_str());
+  }
+
+  // Allocate weights.
+  WeightStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
+  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
+
+  // Get weights, compress, and store.
+  const WeightStorageT c_weights_u8 =
+      LoadCompressedWeights<TConfig>(compressed_weights_path, pool);
+  CompressedWeights<TConfig>* c_weights =
+      reinterpret_cast<CompressedWeights<TConfig>*>(c_weights_u8.get());
+  Decompressor decompressor(pool, weights_path);
+  ForEachTensor<TConfig>(weights, c_weights, decompressor);
+
+  weights->layer_ptrs.~LayerPointers<float, TConfig>();
+  c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
+}
+
+void DecompressWeightsT(gcpp::Model model, const Path& weights,
+                        const Path& compressed_weights, hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      DecompressWeights<ConfigGemma2B>(weights, compressed_weights, pool);
+      break;
+    case Model::GEMMA_7B:
+      DecompressWeights<ConfigGemma7B>(weights, compressed_weights, pool);
+      break;
+    case Model::GRIFFIN_2B:
+      DecompressWeights<ConfigGriffin2B>(weights, compressed_weights, pool);
+      break;
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 class WeightInitializer {
  public:
   WeightInitializer(InitMode mode, std::mt19937* gen)
       : mode_(mode), dist_(0.0f, 1.0f), gen_(gen) {}
 
   template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, float* data,
+  void operator()(const char* name, std::array<float, kCapacity>* data,
                   CompressedArray<MatT, kCapacity>* compressed) {
     if (mode_ == InitMode::RAND_INIT) {
       for (size_t i = 0; i < kCapacity; ++i) {
-        data[i] = dist_(*gen_);
+        (*data)[i] = dist_(*gen_);
       }
     } else if (mode_ == InitMode::ZERO_INIT) {
-      memset(data, 0, kCapacity * sizeof(data[0]));
+      memset(data, 0, sizeof(*data));
     }
   }
  private:
@@ -2065,6 +2109,7 @@ void CrossEntropyLossBackwardStep(const std::vector<int>& prompt,
                                   WeightStorageT& grad_u8,
                                   WeightStorageT& backward_u8,
                                   hwy::ThreadPool& pool) {
+#if 0
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
@@ -2111,6 +2156,7 @@ void CrossEntropyLossBackwardStep(const std::vector<int>& prompt,
   InputEmbeddingVJP(weights.embedder_input_embedding.data(), prompt,
                     kEmbScaling, backward.layers[0].input.data(),
                     grad.embedder_input_embedding.data(), kModelDim);
+#endif
 }
 
 float CrossEntropyLossForwardStepT(const std::vector<int>& prompt,
@@ -2169,6 +2215,7 @@ HWY_EXPORT(CrossEntropyLossBackwardStepT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
+HWY_EXPORT(DecompressWeightsT);
 HWY_EXPORT(Generate2B);
 HWY_EXPORT(Generate7B);
 HWY_EXPORT(GenerateGriffin2B);
@@ -2333,6 +2380,12 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool) {
   HWY_DYNAMIC_DISPATCH(CompressWeightsT)
+  (model, weights, compressed_weights, pool);
+}
+
+void DecompressWeights(gcpp::Model model, const Path& weights,
+                       const Path& compressed_weights, hwy::ThreadPool& pool) {
+  HWY_DYNAMIC_DISPATCH(DecompressWeightsT)
   (model, weights, compressed_weights, pool);
 }
 

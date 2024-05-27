@@ -453,9 +453,10 @@ HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
         const hn::ScalableTag<OutT> d;
 
         const size_t ofs = idx_batch * kBatch;
-        const size_t num = idx_batch == num_batches - 1 ? (num - ofs) : kBatch;
+        const size_t batch =
+            idx_batch == num_batches - 1 ? (num - ofs) : kBatch;
         Traits::Decompress(d, compressed.size(), compressed.data(),
-                           compressed_ofs + ofs, out + ofs, num);
+                           compressed_ofs + ofs, out + ofs, batch);
       });
 
   const double t1 = hwy::platform::Now();
@@ -500,12 +501,15 @@ class Compressor {
 
   // Called for each tensor; compresses it and stores to the cache.
   template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, const float* weights,
+  void operator()(const char* name, const std::array<float, kCapacity>* weights,
                   CompressedArray<MatT, kCapacity>* compressed) {
     fprintf(stderr, "Regenerating %s (%zuM), please wait\n", name,
             kCapacity / (1000 * 1000));
-    Compress(weights, kCapacity, work_, kCapacity, compressed->data(), 0,
-             pool_);
+    fprintf(stderr, "%s value range: %f .. %f\n",
+            name, *std::min_element(weights->begin(), weights->end()),
+            *std::max_element(weights->begin(), weights->end()));
+    Compress(weights->data(), kCapacity, work_, kCapacity,
+             compressed->data(), 0, pool_);
     writer_.Add(CacheKey<MatT>(name), compressed->data(),
                 compressed->CompressedSize());
   }
@@ -528,6 +532,46 @@ class Compressor {
   CompressWorkingSet work_;
   hwy::ThreadPool& pool_;
   BlobWriter writer_;
+};
+
+class Decompressor {
+ public:
+  explicit Decompressor(hwy::ThreadPool& pool, const Path& path)
+      : pool_(pool), output_(OpenFileOrNull(path, "w+")), offset_(0),
+        error_(false) {
+    if (!output_) {
+      fprintf(stderr, "Failed to open to output file %s\n", path.path.c_str());
+      error_ = true;
+    }
+  }
+
+  // Called for each tensor; decompresses it and stores to the cache.
+  template <typename MatT, size_t kCapacity>
+  void operator()(const char* name, std::array<float, kCapacity>* weights,
+                  const CompressedArray<MatT, kCapacity>* compressed) {
+    if (error_) return;
+    fprintf(stderr, "Decompressing %s (%zuM), please wait\n", name,
+            kCapacity / (1000 * 1000));
+    Decompress(*compressed, 0, weights->data(), kCapacity, pool_);
+    for (size_t i = 0; i < kCapacity; ++i) {
+      (*weights)[i] *= compressed->scale();
+    }
+    fprintf(stderr, "%s value range: %f .. %f\n",
+            name, *std::min_element(weights->begin(), weights->end()),
+            *std::max_element(weights->begin(), weights->end()));
+    if (!output_->Write(weights->data(), sizeof(*weights), offset_)) {
+      fprintf(stderr, "Failed to write tensor %s to output file\n", name);
+      error_ = true;
+      return;
+    }
+    offset_ += sizeof(*weights);
+  }
+
+ private:
+  hwy::ThreadPool& pool_;
+  std::unique_ptr<File> output_;
+  uint64_t offset_;
+  bool error_;
 };
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

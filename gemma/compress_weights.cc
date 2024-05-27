@@ -55,14 +55,18 @@ struct Args : public ArgsBase<Args> {
       return "Missing --compressed_weights flag, a file for the compressed "
              "model.";
     }
-    if (!weights.Exists()) {
+    if (!decompress && !weights.Exists()) {
       return "Can't open file specified with --weights flag.";
+    }
+    if (decompress && !compressed_weights.Exists()) {
+      return "Can't open file specified with --compressed_weights flag.";
     }
     return nullptr;
   }
 
   Path weights;             // uncompressed weights file location
   Path compressed_weights;  // compressed weights file location
+  int decompress;
   std::string model_type_str;
   Model model_type;
   size_t num_threads;
@@ -87,6 +91,8 @@ struct Args : public ArgsBase<Args> {
             "Number of threads to use.\n    Default = Estimate of the "
             "number of suupported concurrent threads.",
             2);
+    visitor(decompress, "decompress", 0,
+            "If set to nonzero, decompresses weights instead of compressing.");
   }
 };
 
@@ -101,8 +107,13 @@ void ShowHelp(gcpp::Args& args) {
 
 void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
-  gcpp::CompressWeights(args.ModelType(), args.weights, args.compressed_weights,
-                        pool);
+  if (args.decompress) {
+    gcpp::DecompressWeights(args.ModelType(), args.weights,
+                            args.compressed_weights, pool);
+  } else {
+    gcpp::CompressWeights(args.ModelType(), args.weights,
+                          args.compressed_weights, pool);
+  }
 }
 
 }  // namespace gcpp

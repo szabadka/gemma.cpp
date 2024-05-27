@@ -120,6 +120,9 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool);
 
+void DecompressWeights(gcpp::Model model, const Path& weights,
+                       const Path& compressed_weights, hwy::ThreadPool& pool);
+
 float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);

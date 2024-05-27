@@ -179,7 +179,7 @@ class CacheLoader {
 
   // Called for each tensor, enqueues read requests.
   template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, const float* null,
+  void operator()(const char* name, const std::array<float, kCapacity>* null,
                   CompressedArray<MatT, kCapacity>* compressed) {
     HWY_DASSERT(null == nullptr);
     HWY_DASSERT(compressed != nullptr);
