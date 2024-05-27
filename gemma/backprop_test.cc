@@ -657,13 +657,14 @@ TEST(BackPropTest, EndToEnd) {
   for (const Prompt& prompt : batch) {
     LogPrompt(prompt);
     RandInit(weights.get(), 1.0, gen);
-    ForwardPass(prompt, weights.get(), forward);
+    CrossEntropyLossForwardPass(prompt, weights.get(), forward);
     grad.clear();
-    BackwardPass(prompt, weights.get(), forward, grad.get(), backward);
+    CrossEntropyLossBackwardPass(
+        prompt, weights.get(), forward, grad.get(), backward);
 
     Complexify(weights.get(), c_weights.get());
     auto func = [&]() {
-      return ForwardPass(prompt, c_weights.get(), c_forward);
+      return CrossEntropyLossForwardPass(prompt, c_weights.get(), c_forward);
     };
 
     TestGradient(grad.get().embedder_input_embedding,
@@ -681,28 +682,28 @@ TEST(BackPropTest, EndToEnd) {
 }
 
 template<typename T, typename TConfig>
-T ForwardPass(const std::vector<Prompt>& batch,
-              const WeightsWrapper<T, TConfig>& weights,
-              AllActivations<T, TConfig>& forward) {
+T CrossEntropyLossForwardPass(const std::vector<Prompt>& batch,
+                              const WeightsWrapper<T, TConfig>& weights,
+                              AllActivations<T, TConfig>& forward) {
   T loss = 0.0;
   for (const Prompt& prompt : batch) {
-    loss += ForwardPass(prompt, weights.get(), forward);
+    loss += CrossEntropyLossForwardPass(prompt, weights.get(), forward);
   }
   T scale = 1.0 / batch.size();
   return loss * scale;
 }
 
 template<typename T, typename TConfig>
-T ForwardPass(T learning_rate,
-              const std::vector<Prompt>& batch,
-              const WeightsWrapper<T, TConfig>& weights,
-              const WeightsWrapper<T, TConfig>& grad,
-              WeightsWrapper<T, TConfig>& tmp,
-              AllActivations<T, TConfig>& forward) {
+T CrossEntropyLossForwardPass(T learning_rate,
+                              const std::vector<Prompt>& batch,
+                              const WeightsWrapper<T, TConfig>& weights,
+                              const WeightsWrapper<T, TConfig>& grad,
+                              WeightsWrapper<T, TConfig>& tmp,
+                              AllActivations<T, TConfig>& forward) {
   tmp.copy(weights);
   const T scale = -learning_rate / batch.size();
   MulByConstAndAdd(scale, grad.get(), tmp.get());
-  return ForwardPass(batch, tmp, forward);
+  return CrossEntropyLossForwardPass(batch, tmp, forward);
 }
 
 template<typename T, typename TConfig>
@@ -713,10 +714,12 @@ T FindOptimalUpdate(const WeightsWrapper<T, TConfig>& grad,
                     const std::vector<Prompt>& batch,
                     T loss, T initial_learning_rate) {
   T lr0 = initial_learning_rate;
-  T loss0 = ForwardPass(lr0, batch, weights, grad, tmp, forward);
+  T loss0 = CrossEntropyLossForwardPass(
+      lr0, batch, weights, grad, tmp, forward);
   for (size_t iter = 0; iter < 30; ++iter) {
     T lr1 = lr0 * 0.5;
-    T loss1 = ForwardPass(lr1, batch, weights, grad, tmp, forward);
+    T loss1 = CrossEntropyLossForwardPass(
+        lr1, batch, weights, grad, tmp, forward);
     if (loss0 < loss && loss1 >= loss0) {
       break;
     }
@@ -725,7 +728,8 @@ T FindOptimalUpdate(const WeightsWrapper<T, TConfig>& grad,
   }
   for (size_t iter = 0; iter < 30; ++iter) {
     T lr1 = lr0 * 2.0;
-    T loss1 = ForwardPass(lr1, batch, weights, grad, tmp, forward);
+    T loss1 = CrossEntropyLossForwardPass(
+        lr1, batch, weights, grad, tmp, forward);
     if (loss1 >= loss0) {
       break;
     }
@@ -769,8 +773,9 @@ TEST(BackProptest, Convergence) {
     std::mt19937 sgen(42);
     std::vector<Prompt> batch = training_task.SampleBatch(kBatchSize, sgen);
     for (const Prompt& prompt : batch) {
-      loss += ForwardPass(prompt, weights.get(), forward);
-      BackwardPass(prompt, weights.get(), forward, grad.get(), backward);
+      loss += CrossEntropyLossForwardPass(prompt, weights.get(), forward);
+      CrossEntropyLossBackwardPass(
+          prompt, weights.get(), forward, grad.get(), backward);
     }
 
     if (step % 200 == 0) {
@@ -778,7 +783,7 @@ TEST(BackProptest, Convergence) {
       Complexify(weights.get(), c_weights.get());
       auto func = [&]() {
         TC scale = batch.size();
-        return ForwardPass(batch, c_weights, c_forward) * scale;
+        return CrossEntropyLossForwardPass(batch, c_weights, c_forward) * scale;
       };
 
       TestGradient(grad.get().embedder_input_embedding,

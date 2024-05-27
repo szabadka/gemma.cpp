@@ -124,6 +124,9 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);
 
+WeightStorageT LoadWeights(const Path& weights, Model model_type,
+                           hwy::ThreadPool& pool);
+
 enum class InitMode { RAND_INIT, ZERO_INIT };
 
 template <typename TConfig>

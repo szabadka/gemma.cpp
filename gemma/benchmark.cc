@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nlohmann/json.hpp"
+#include "gemma/backprop_scalar.h"
 #include "gemma/gemma.h"
 #include "util/app.h"
 #include "util/args.h"
@@ -196,10 +197,14 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     float entropy =
         ComputeCrossEntropy(model, num_tokens, prompt_slice, kv_cache, pool,
                             app.verbosity);
-#else
+#elif 0
     gcpp::WeightStorageT forward = AllocateForwardPass(model_type);
     float entropy = CrossEntropyLossForwardStep(
         prompt_slice, 1, model_type, model.Weights(), forward, pool);
+#else
+    const Weights<float, ConfigGemma2B>& weights =
+        *reinterpret_cast<Weights<float, ConfigGemma2B>*>(model.Weights());
+    gcpp::ActivationsWrapper<float, ConfigGemma2B> activations;
 #endif
 
     total_entropy += entropy;

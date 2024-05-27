@@ -66,7 +66,7 @@
 constexpr bool kDryRunFread = false;
 
 // Setting this to false will load and use uncompressed weights.
-constexpr bool kWeightsAreCompressed = true;
+constexpr bool kWeightsAreCompressed = false;
 
 // Set this to true to debug tokenizer tokens.
 constexpr bool kShowTokenization = false;
@@ -316,6 +316,10 @@ struct CompressedWeights {
 template <class TConfig>
 using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
                          Weights<float, TConfig>>;
+
+template <class TConfig>
+using LayerT = hwy::If<kWeightsAreCompressed, CompressedLayer<TConfig>,
+                       Layer<float, TConfig>>;
 
 // Aligned.
 template <class TConfig, size_t TBatchSize>
@@ -1693,7 +1697,7 @@ void RMSNormVJP(const float* HWY_RESTRICT weights, const float* HWY_RESTRICT x,
 }
 
 template <typename TConfig>
-void ApplyForwardLayer(const CompressedLayer<TConfig>& weights,
+void ApplyForwardLayer(const LayerT<TConfig>& weights,
                        ForwardLayer<TConfig>& activations,
                        size_t num_tokens,
                        float* HWY_RESTRICT even_odd,
@@ -2024,8 +2028,7 @@ float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
   HWY_DASSERT(context_size < prompt.size());
   const size_t num_tokens = prompt.size() - 1;
 
-  using TWeights = Weights<float, TConfig>;
-  const auto& weights = *reinterpret_cast<const WeightsT<TConfig>*>(weights_u8.get());
+  const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
   auto& forward = *reinterpret_cast<ForwardPass<TConfig>*>(forward_u8.get());
 
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
@@ -2072,7 +2075,7 @@ void CrossEntropyLossBackwardStep(const std::vector<int>& prompt,
   HWY_DASSERT(context_size < prompt.size());
   const size_t num_tokens = prompt.size() - 1;
 
-  using TWeights = Weights<float, TConfig>;
+  using TWeights = WeightsT<TConfig>;
   const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
   const auto& forward =
@@ -2341,6 +2344,11 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
       max_tokens, prompt, kv_cache, pool, verbosity);
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
   return result;
+}
+
+WeightStorageT LoadWeights(const Path& weights, Model model_type,
+                           hwy::ThreadPool& pool) {
+  return HWY_DYNAMIC_DISPATCH(LoadWeightsT)(model_type, weights, pool);
 }
 
 WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {

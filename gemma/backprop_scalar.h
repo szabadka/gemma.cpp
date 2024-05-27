@@ -368,6 +368,23 @@ struct AllActivations {
 };
 
 template<typename T, typename TConfig>
+class AllocationsWrapper {
+ public:
+  AllocationsWrapper()
+      : data_(hwy::AllocateAligned<uint8_t>(
+            sizeof(AllActivations<T, TConfig>))),
+        activations_(
+            reinterpret_cast<AllActivations<T, TConfig>*>(data_.get())) {}
+
+  const AllActivations<T, TConfig>& get() const { return *activations_; }
+  AllActivations<T, TConfig>& get() { return *activations_; }
+
+ private:
+  hwy::AlignedFreeUniquePtr<uint8_t[]> data_;
+  AllActivations<T, TConfig>* activations_;
+};
+
+template<typename T, typename TConfig>
 void MulByConstAndAdd(T c, const Layer<T, TConfig>& x,
                       Layer<T, TConfig>& out) {
   MulByConstAndAdd(c, x.pre_attention_norm_scale, out.pre_attention_norm_scale);
@@ -718,9 +735,9 @@ void CrossEntropyLossGrad(const T* x, T* dx, const Prompt& prompt, size_t V) {
 }
 
 template<typename T, typename TConfig>
-T ForwardPass(const Prompt& prompt,
-              const Weights<T, TConfig>& weights,
-              AllActivations<T, TConfig>& forward) {
+T CrossEntropyLossForwardPass(const Prompt& prompt,
+                              const Weights<T, TConfig>& weights,
+                              AllActivations<T, TConfig>& forward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
@@ -755,11 +772,11 @@ T ForwardPass(const Prompt& prompt,
 }
 
 template<typename T, typename TConfig>
-void BackwardPass(const Prompt& prompt,
-                  const Weights<T, TConfig>& weights,
-                  const AllActivations<T, TConfig>& forward,
-                  Weights<T, TConfig>& grad,
-                  AllActivations<T, TConfig>& backward) {
+void CrossEntropyLossBackwardPass(const Prompt& prompt,
+                                  const Weights<T, TConfig>& weights,
+                                  const AllActivations<T, TConfig>& forward,
+                                  Weights<T, TConfig>& grad,
+                                  AllActivations<T, TConfig>& backward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
