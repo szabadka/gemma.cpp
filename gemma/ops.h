@@ -1073,15 +1073,12 @@ void MatMulVJP(const std::array<float, kRows * kCols>& weights,
                std::array<float, kRows * kCols>& grad_w,
                float* HWY_RESTRICT grad_x,  // num_tokens * kCols
                hwy::ThreadPool& pool) {
+  memset(grad_x, 0, num_tokens * kCols * sizeof(grad_x[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t voffs = pos * kRows;
     const size_t xoffs = pos * kCols;
     for (size_t j = 0; j < kRows; ++j) {
       MulByConstAndAdd(v[voffs + j], &x[xoffs], &grad_w[j * kCols], kCols);
-    }
-    // &grad_x[xoffs] = &v[voffs] * weights (row vec * matrix)
-    memset(&grad_x[xoffs], 0, kCols * sizeof(grad_x[0]));
-    for (size_t j = 0; j < kRows; ++j) {
       MulByConstAndAdd(v[voffs + j], &weights[j * kCols], &grad_x[xoffs],
                        kCols);
     }

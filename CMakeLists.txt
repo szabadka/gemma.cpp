@@ -104,6 +104,7 @@ if (GEMMA_ENABLE_TESTS)
 set(GEMMA_TEST_FILES
   gemma/ops_test.cc
   gemma/gemma_test.cc
+  gemma/gradient_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)

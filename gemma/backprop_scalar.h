@@ -38,7 +38,7 @@ void LogVec(const char* name, const std::array<T, N>& x) {
 }
 
 template<typename T, typename U>
-U Dot(const T* a, const U* b, size_t N) {
+U DotT(const T* a, const U* b, size_t N) {
   U sum = {};
   for (size_t i = 0; i < N; ++i) {
     sum += a[i] * b[i];
@@ -47,7 +47,7 @@ U Dot(const T* a, const U* b, size_t N) {
 }
 
 template<typename T>
-void MulByConst(T c, T* x, size_t N) {
+void MulByConstT(T c, T* x, size_t N) {
   for (size_t i = 0; i < N; ++i) {
     x[i] *= c;
   }
@@ -55,15 +55,15 @@ void MulByConst(T c, T* x, size_t N) {
 
 // out += c * x
 template<typename T>
-void MulByConstAndAdd(T c, const T* x, T* out, size_t N) {
+void MulByConstAndAddT(T c, const T* x, T* out, size_t N) {
   for (size_t i = 0; i < N; ++i) {
     out[i] += c * x[i];
   }
 }
 
 template<typename T, size_t N>
-void MulByConstAndAdd(T c, const std::array<T, N>& x, std::array<T, N>& out) {
-  MulByConstAndAdd(c, x.data(), out.data(), N);
+void MulByConstAndAddT(T c, const std::array<T, N>& x, std::array<T, N>& out) {
+  MulByConstAndAddT(c, x.data(), out.data(), N);
 }
 
 template<typename T>
@@ -76,22 +76,22 @@ void Add(const T* a, const T* b, T* out, size_t N) {
 // w is N x M matrix in row-major order, x is M x K matrix in column-major order
 // y = w * x is N x K matrix in column-major order.
 template<typename T>
-void MatMul(const T* w, const T* x, T* y, size_t N, size_t M, size_t K) {
+void MatMulT(const T* w, const T* x, T* y, size_t N, size_t M, size_t K) {
   for (size_t i = 0; i < K; ++i) {
     for (size_t j = 0; j < N; ++j) {
-      y[i * N + j] = Dot(&w[j * M], &x[i * M], M);
+      y[i * N + j] = DotT(&w[j * M], &x[i * M], M);
     }
   }
 }
 
 template<typename T>
-void MatMulVJP(const T* w, const T* x, const T* dy, T* dw, T* dx,
-               size_t N, size_t M, size_t K) {
+void MatMulVJPT(const T* w, const T* x, const T* dy, T* dw, T* dx,
+                size_t N, size_t M, size_t K) {
   memset(dx, 0, M * K * sizeof(dx[0]));
   for (size_t i = 0; i < K; ++i) {
     for (size_t j = 0; j < N; ++j) {
-      MulByConstAndAdd(dy[i * N + j], &x[i * M], &dw[j * M], M);
-      MulByConstAndAdd(dy[i * N + j], &w[j * M], &dx[i * M], M);
+      MulByConstAndAddT(dy[i * N + j], &x[i * M], &dw[j * M], M);
+      MulByConstAndAddT(dy[i * N + j], &w[j * M], &dx[i * M], M);
     }
   }
 }
@@ -106,7 +106,7 @@ void MultiHeadMatMul(const T* w, const T* x, T* y, size_t H, size_t N,
   for (size_t i = 0; i < K; ++i) {
     for (size_t h = 0; h < H; ++h) {
       for (size_t j = 0; j < N; ++j) {
-        y[i * N + j] += Dot(&w[h * N * M + j * M], &x[i * H * M + h * M], M);
+        y[i * N + j] += DotT(&w[h * N * M + j * M], &x[i * H * M + h * M], M);
       }
     }
   }
@@ -119,10 +119,10 @@ void MultiHeadMatMulVJP(const T* w, const T* x, const T* dy, T* dw, T* dx,
   for (size_t i = 0; i < K; ++i) {
     for (size_t j = 0; j < N; ++j) {
       for (size_t h = 0; h < H; ++h) {
-        MulByConstAndAdd(dy[i * N + j], &x[i * H * M + h * M],
-                         &dw[h * N * M + j * M], M);
-        MulByConstAndAdd(dy[i * N + j], &w[h * N * M + j * M],
-                         &dx[i * H * M + h * M], M);
+        MulByConstAndAddT(dy[i * N + j], &x[i * H * M + h * M],
+                          &dw[h * N * M + j * M], M);
+        MulByConstAndAddT(dy[i * N + j], &w[h * N * M + j * M],
+                          &dx[i * H * M + h * M], M);
       }
     }
   }
@@ -385,24 +385,26 @@ class ActivationsWrapper {
 };
 
 template<typename T, typename TConfig>
-void MulByConstAndAdd(T c, const Layer<T, TConfig>& x,
+void MulByConstAndAddT(T c, const Layer<T, TConfig>& x,
                       Layer<T, TConfig>& out) {
-  MulByConstAndAdd(c, x.pre_attention_norm_scale, out.pre_attention_norm_scale);
-  MulByConstAndAdd(c, x.attn_vec_einsum_w, out.attn_vec_einsum_w);
-  MulByConstAndAdd(c, x.qkv_einsum_w, out.qkv_einsum_w);
-  MulByConstAndAdd(c, x.pre_ffw_norm_scale, out.pre_ffw_norm_scale);
-  MulByConstAndAdd(c, x.gating_einsum_w, out.gating_einsum_w);
-  MulByConstAndAdd(c, x.linear_w, out.linear_w);
+  MulByConstAndAddT(c, x.pre_attention_norm_scale,
+                    out.pre_attention_norm_scale);
+  MulByConstAndAddT(c, x.attn_vec_einsum_w, out.attn_vec_einsum_w);
+  MulByConstAndAddT(c, x.qkv_einsum_w, out.qkv_einsum_w);
+  MulByConstAndAddT(c, x.pre_ffw_norm_scale, out.pre_ffw_norm_scale);
+  MulByConstAndAddT(c, x.gating_einsum_w, out.gating_einsum_w);
+  MulByConstAndAddT(c, x.linear_w, out.linear_w);
 }
 
 template<typename T, typename TConfig>
-void MulByConstAndAdd(T c, const Weights<T, TConfig>& x,
-                      Weights<T, TConfig>& out) {
+void MulByConstAndAddT(T c, const Weights<T, TConfig>& x,
+                       Weights<T, TConfig>& out) {
   static constexpr size_t kLayers = TConfig::kLayers;
-  MulByConstAndAdd(c, x.embedder_input_embedding, out.embedder_input_embedding);
-  MulByConstAndAdd(c, x.final_norm_scale, out.final_norm_scale);
+  MulByConstAndAddT(c, x.embedder_input_embedding,
+                    out.embedder_input_embedding);
+  MulByConstAndAddT(c, x.final_norm_scale, out.final_norm_scale);
   for (size_t i = 0; i < kLayers; ++i) {
-    MulByConstAndAdd(c, *x.GetLayer(i), *out.GetLayer(i));
+    MulByConstAndAddT(c, *x.GetLayer(i), *out.GetLayer(i));
   }
 }
 
@@ -412,7 +414,7 @@ void InputEmbedding(const T* w, const std::vector<int>& tokens, T scaling,
   for (size_t i = 0; i + 1 < tokens.size(); ++i) {
     int token = tokens[i];
     memcpy(y + i * N, w + token * N, N * sizeof(y[0]));
-    MulByConst(scaling, y + i * N, N);
+    MulByConstT(scaling, y + i * N, N);
   }
 }
 
@@ -421,7 +423,7 @@ void InputEmbeddingVJP(const T* w, const std::vector<int>& tokens, T scaling,
                        const T* dy, T* dw, size_t N) {
   for (size_t i = 0; i + 1 < tokens.size(); ++i) {
     int token = tokens[i];
-    MulByConstAndAdd(scaling, dy + i * N, dw + token * N, N);
+    MulByConstAndAddT(scaling, dy + i * N, dw + token * N, N);
   }
 }
 
@@ -435,7 +437,7 @@ void MaskedAttention(const T* qkv, T* output, size_t num_tokens,
       const T* q = qkv + qoffset + head * kQKVDim;
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
         const T* k = qkv + (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
-        output[aoffset + pos2] = Dot(q, k, kQKVDim);
+        output[aoffset + pos2] = DotT(q, k, kQKVDim);
       }
     }
   }
@@ -460,8 +462,8 @@ void MaskedAttentionVJP(const T* qkv, const T* doutput, T* dqkv,
         const size_t koffs = (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
         const T* k = qkv + koffs;
         T* dk = dqkv + koffs;
-        MulByConstAndAdd(dout[pos2], k, dq, kQKVDim);
-        MulByConstAndAdd(dout[pos2], q, dk, kQKVDim);
+        MulByConstAndAddT(dout[pos2], k, dq, kQKVDim);
+        MulByConstAndAddT(dout[pos2], q, dk, kQKVDim);
       }
     }
   }
@@ -501,7 +503,7 @@ void MixByAttention(const T* qkv, const T* attention, T* output,
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
         size_t v_offset = (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
         const T* v = &qkv[v_offset];
-        MulByConstAndAdd(att[pos2], v, out, kQKVDim);
+        MulByConstAndAddT(att[pos2], v, out, kQKVDim);
       }
     }
   }
@@ -525,8 +527,8 @@ void MixByAttentionVJP(const T* qkv, const T* attention, const T* doutput,
       const T* dout = &doutput[offset];
       T* datt = &dattention[aoffset];
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-        datt[pos2] = Dot(dout, &qkv[v_offset(pos2)], kQKVDim);
-        MulByConstAndAdd(att[pos2], dout, &dqkv[v_offset(pos2)], kQKVDim);
+        datt[pos2] = DotT(dout, &qkv[v_offset(pos2)], kQKVDim);
+        MulByConstAndAddT(att[pos2], dout, &dqkv[v_offset(pos2)], kQKVDim);
       }
     }
   }
@@ -545,8 +547,9 @@ void ApplyAttentionBlock(const Layer<T, TConfig>& weights,
   RMSNorm(weights.pre_attention_norm_scale.data(), activations.input.data(),
           activations.pre_att_rms_out.data(), kModelDim, num_tokens);
 
-  MatMul(weights.qkv_einsum_w.data(), activations.pre_att_rms_out.data(),
-         activations.qkv.data(), (kHeads + 2) * kQKVDim, kModelDim, num_tokens);
+  MatMulT(weights.qkv_einsum_w.data(), activations.pre_att_rms_out.data(),
+          activations.qkv.data(), (kHeads + 2) * kQKVDim, kModelDim,
+          num_tokens);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     T* qkv = activations.qkv.data() + pos * (kHeads + 2) * kQKVDim;
@@ -557,7 +560,7 @@ void ApplyAttentionBlock(const Layer<T, TConfig>& weights,
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     T* qkv = activations.qkv.data() + pos * (kHeads + 2) * kQKVDim;
-    MulByConst(kQueryScale, qkv, kHeads * kQKVDim);
+    MulByConstT(kQueryScale, qkv, kHeads * kQKVDim);
   }
 
   MaskedAttention(activations.qkv.data(), activations.att.data(),
@@ -590,7 +593,8 @@ void AttentionBlockVJP(const Layer<T, TConfig>& weights,
   static const T kQueryScale = 1.0 / std::sqrt(T(kQKVDim));
 
   MultiHeadMatMulVJP(weights.attn_vec_einsum_w.data(), forward.att_out.data(),
-                     dy, grad.attn_vec_einsum_w.data(), backward.att_out.data(),
+                     dy, grad.attn_vec_einsum_w.data(),
+                     backward.att_out.data(),
                      kHeads, kModelDim, kQKVDim, num_tokens);
 
   MixByAttentionVJP(forward.qkv.data(), forward.att_sm.data(),
@@ -606,7 +610,7 @@ void AttentionBlockVJP(const Layer<T, TConfig>& weights,
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     T* qkv = backward.qkv.data() + pos * (kHeads + 2) * kQKVDim;
-    MulByConst(kQueryScale, qkv, kHeads * kQKVDim);
+    MulByConstT(kQueryScale, qkv, kHeads * kQKVDim);
   }
 
   for (int pos = 0; pos < num_tokens; ++pos) {
@@ -616,8 +620,8 @@ void AttentionBlockVJP(const Layer<T, TConfig>& weights,
     }
   }
 
-  MatMulVJP(weights.qkv_einsum_w.data(), forward.pre_att_rms_out.data(),
-            backward.qkv.data(), grad.qkv_einsum_w.data(),
+  MatMulVJPT(weights.qkv_einsum_w.data(), forward.pre_att_rms_out.data(),
+             backward.qkv.data(), grad.qkv_einsum_w.data(),
             backward.pre_att_rms_out.data(),
             (kHeads + 2) * kQKVDim, kModelDim, num_tokens);
   RMSNormVJP(weights.pre_attention_norm_scale.data(), forward.input.data(),
@@ -638,15 +642,15 @@ void ApplyFFWBlock(const Layer<T, TConfig>& weights,
   RMSNorm(weights.pre_ffw_norm_scale.data(), activations.input.data(),
           activations.bf_pre_ffw_rms_out.data(), kModelDim, num_tokens);
 
-  MatMul(weights.gating_einsum_w.data(), activations.bf_pre_ffw_rms_out.data(),
-         activations.ffw_hidden.data(), kFFHiddenDim * 2, kModelDim,
-         num_tokens);
+  MatMulT(weights.gating_einsum_w.data(), activations.bf_pre_ffw_rms_out.data(),
+          activations.ffw_hidden.data(), kFFHiddenDim * 2, kModelDim,
+          num_tokens);
 
   GatedGelu(activations.ffw_hidden.data(), activations.ffw_hidden_gated.data(),
             kFFHiddenDim, num_tokens);
 
-  MatMul(weights.linear_w.data(), activations.ffw_hidden_gated.data(),
-         activations.ffw_out.data(), kModelDim, kFFHiddenDim, num_tokens);
+  MatMulT(weights.linear_w.data(), activations.ffw_hidden_gated.data(),
+          activations.ffw_out.data(), kModelDim, kFFHiddenDim, num_tokens);
 
   Add(activations.input.data(), activations.ffw_out.data(), output,
       num_tokens * kModelDim);
@@ -662,17 +666,17 @@ void FFWBlockVJP(const Layer<T, TConfig>& weights,
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
 
-  MatMulVJP(weights.linear_w.data(), forward.ffw_hidden_gated.data(),
-            dy, grad.linear_w.data(), backward.ffw_hidden_gated.data(),
-            kModelDim, kFFHiddenDim, num_tokens);
+  MatMulVJPT(weights.linear_w.data(), forward.ffw_hidden_gated.data(),
+             dy, grad.linear_w.data(), backward.ffw_hidden_gated.data(),
+             kModelDim, kFFHiddenDim, num_tokens);
 
   GatedGeluVJP(forward.ffw_hidden.data(), backward.ffw_hidden_gated.data(),
                backward.ffw_hidden.data(), kFFHiddenDim, num_tokens);
 
-  MatMulVJP(weights.gating_einsum_w.data(), forward.bf_pre_ffw_rms_out.data(),
-            backward.ffw_hidden.data(), grad.gating_einsum_w.data(),
-            backward.bf_pre_ffw_rms_out.data(), kFFHiddenDim * 2, kModelDim,
-            num_tokens);
+  MatMulVJPT(weights.gating_einsum_w.data(), forward.bf_pre_ffw_rms_out.data(),
+             backward.ffw_hidden.data(), grad.gating_einsum_w.data(),
+             backward.bf_pre_ffw_rms_out.data(), kFFHiddenDim * 2, kModelDim,
+             num_tokens);
 
   RMSNormVJP(weights.pre_ffw_norm_scale.data(), forward.input.data(),
              backward.bf_pre_ffw_rms_out.data(),
@@ -759,9 +763,9 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
           forward.final_layer_output.data(),
           forward.final_norm_output.data(), kModelDim, num_tokens);
 
-  MatMul(weights.embedder_input_embedding.data(),
-         forward.final_norm_output.data(),
-         forward.raw_logits.data(), kVocabSize, kModelDim, num_tokens);
+  MatMulT(weights.embedder_input_embedding.data(),
+          forward.final_norm_output.data(),
+          forward.raw_logits.data(), kVocabSize, kModelDim, num_tokens);
 
   Softcap(forward.raw_logits.data(), forward.logits.data(),
           num_tokens * kVocabSize);
@@ -791,12 +795,12 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   SoftcapVJP(forward.raw_logits.data(), backward.logits.data(),
              backward.raw_logits.data(), num_tokens * kVocabSize);
 
-  MatMulVJP(weights.embedder_input_embedding.data(),
-            forward.final_norm_output.data(),
-            backward.raw_logits.data(),
-            grad.embedder_input_embedding.data(),
-            backward.final_norm_output.data(),
-            kVocabSize, kModelDim, num_tokens);
+  MatMulVJPT(weights.embedder_input_embedding.data(),
+             forward.final_norm_output.data(),
+             backward.raw_logits.data(),
+             grad.embedder_input_embedding.data(),
+             backward.final_norm_output.data(),
+             kVocabSize, kModelDim, num_tokens);
 
   RMSNormVJP(weights.final_norm_scale.data(),
              forward.final_layer_output.data(),

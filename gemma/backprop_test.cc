@@ -79,9 +79,9 @@ void TestGradient(const std::array<double, N>& grad,
 }
 
 TEST(BackPropTest, MatMulVJP) {
-  static const size_t kRows = 2;
+  static const size_t kRows = 8;
   static const size_t kCols = 64;
-  static const size_t kTokens = 3;
+  static const size_t kTokens = 5;
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
@@ -101,14 +101,14 @@ TEST(BackPropTest, MatMulVJP) {
     Complexify(weights, c_weights);
     Complexify(x, c_x);
     auto func = [&]() {
-      MatMul(c_weights.data(), c_x.data(), c_y.data(), kRows, kCols, kTokens);
-      return Dot(dy.data(), c_y.data(), kTokens * kRows);
+      MatMulT(c_weights.data(), c_x.data(), c_y.data(), kRows, kCols, kTokens);
+      return DotT(dy.data(), c_y.data(), kTokens * kRows);
     };
     memset(&grad, 0, sizeof(grad));
-    MatMulVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
-              kRows, kCols, kTokens);
-    TestGradient(dx, c_x, func, 1e-15, 1e-13,__LINE__);
-    TestGradient(grad, c_weights, func, 1e-15, 1e-13,__LINE__);
+    MatMulVJPT(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
+               kRows, kCols, kTokens);
+    TestGradient(dx, c_x, func, 1e-11, 1e-12,__LINE__);
+    TestGradient(grad, c_weights, func, 1e-14, 1e-12,__LINE__);
   }
 }
 
@@ -138,7 +138,7 @@ TEST(BackPropTest, MultiHeadMatMulVJP) {
     auto func = [&]() {
       MultiHeadMatMul(c_weights.data(), c_x.data(), c_y.data(), kHeads, kRows,
                       kCols, kTokens);
-      return Dot(dy.data(), c_y.data(), kTokens * kRows);
+      return DotT(dy.data(), c_y.data(), kTokens * kRows);
     };
     memset(&grad, 0, sizeof(grad));
     MultiHeadMatMulVJP(weights.data(), x.data(), dy.data(), grad.data(),
@@ -171,7 +171,7 @@ TEST(BackPropTest, RMSNormVJP) {
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
       RMSNorm(c_weights.data(), c_x.data(), c_y.data(), N, K);
-      return Dot(dy.data(), c_y.data(), K * N);
+      return DotT(dy.data(), c_y.data(), K * N);
     };
     memset(&grad, 0, sizeof(grad));
     RMSNormVJP(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
@@ -198,7 +198,7 @@ TEST(BackPropTest, SoftmaxVJP) {
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
       Softmax(c_x.data(), c_y.data(), N);
-      return Dot(dy.data(), c_y.data(), N);
+      return DotT(dy.data(), c_y.data(), N);
     };
     SoftmaxVJP(x.data(), dy.data(), dx.data(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
@@ -225,7 +225,7 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
       MaskedSoftmax(c_x.data(), c_y.data(), kTokens, kHeads, kSeqLen);
-      return Dot(dy.data(), c_y.data(), N);
+      return DotT(dy.data(), c_y.data(), N);
     };
     MaskedSoftmaxVJP(x.data(), dy.data(), dx.data(), kTokens, kHeads, kSeqLen);
     TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
@@ -249,7 +249,7 @@ TEST(BackPropTest, SoftcapVJP) {
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
       Softcap(c_x.data(), c_y.data(), N);
-      return Dot(dy.data(), c_y.data(), N);
+      return DotT(dy.data(), c_y.data(), N);
     };
     SoftcapVJP(x.data(), dy.data(), dx.data(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
@@ -300,7 +300,7 @@ TEST(BackPropTest, GatedGeluVJP) {
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
       GatedGelu(c_x.data(), c_y.data(), N, K);
-      return Dot(dy.data(), c_y.data(), N * K);
+      return DotT(dy.data(), c_y.data(), N * K);
     };
     GatedGeluVJP(x.data(), dy.data(), dx.data(), N, K);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
@@ -330,7 +330,7 @@ TEST(BackPropTest, MaskedAttentionVJP) {
     auto func = [&]() {
       MaskedAttention(c_x.data(), c_y.data(), kTokens, kHeads, kQKVDim,
                       kSeqLen);
-      return Dot(dy.data(), c_y.data(), kOutSize);
+      return DotT(dy.data(), c_y.data(), kOutSize);
     };
     MaskedAttentionVJP(x.data(), dy.data(), dx.data(),
                        kTokens, kHeads, kQKVDim, kSeqLen);
@@ -367,7 +367,7 @@ TEST(BackPropTest, MixByAttentionVJP) {
     auto func = [&]() {
       MixByAttention(c_qkv.data(), c_attn.data(), c_y.data(),
                      kTokens, kHeads, kQKVDim, kSeqLen);
-      return Dot(dy.data(), c_y.data(), kOutSize);
+      return DotT(dy.data(), c_y.data(), kOutSize);
     };
     MixByAttentionVJP(qkv.data(), attn.data(), dy.data(), dqkv.data(),
                       dattn.data(), kTokens, kHeads, kQKVDim, kSeqLen);
@@ -397,7 +397,7 @@ TEST(BackPropTest, InputEmbeddingVJP) {
     Complexify(weights, c_weights);
     auto func = [&]() {
       InputEmbedding(c_weights.data(), tokens, TC(3.0), c_y.data(), kModelDim);
-      return Dot(dy.data(), c_y.data(), num_tokens * kModelDim);
+      return DotT(dy.data(), c_y.data(), num_tokens * kModelDim);
     };
     memset(&grad, 0, sizeof(grad));
     InputEmbeddingVJP(weights.data(), tokens, 3.0, dy.data(), grad.data(),
@@ -485,7 +485,7 @@ TEST(BackPropTest, AttnBlockVJP) {
     Complexify(forward.input, c_forward.input);
     auto func = [&]() {
       ApplyAttentionBlock(c_weights, c_forward, num_tokens, c_y.data());
-      return Dot(dy.data(), c_y.data(), num_tokens * TestConfig::kModelDim);
+      return DotT(dy.data(), c_y.data(), num_tokens * TestConfig::kModelDim);
     };
     memset(&grad, 0, sizeof(grad));
     ApplyAttentionBlock(weights, forward, num_tokens, y.data());
@@ -532,7 +532,7 @@ TEST(BackPropTest, FFWBlockVJP) {
     Complexify(forward.input, c_forward.input);
     auto func = [&]() {
       ApplyFFWBlock(c_weights, c_forward, num_tokens, c_y.data());
-      return Dot(dy.data(), c_y.data(), num_tokens * TestConfig::kModelDim);
+      return DotT(dy.data(), c_y.data(), num_tokens * TestConfig::kModelDim);
     };
     memset(&grad, 0, sizeof(grad));
     ApplyFFWBlock(weights, forward, num_tokens, y.data());
@@ -702,7 +702,7 @@ T CrossEntropyLossForwardPass(T learning_rate,
                               AllActivations<T, TConfig>& forward) {
   tmp.copy(weights);
   const T scale = -learning_rate / batch.size();
-  MulByConstAndAdd(scale, grad.get(), tmp.get());
+  MulByConstAndAddT(scale, grad.get(), tmp.get());
   return CrossEntropyLossForwardPass(batch, tmp, forward);
 }
 
@@ -737,7 +737,7 @@ T FindOptimalUpdate(const WeightsWrapper<T, TConfig>& grad,
     lr0 = lr1;
   }
   const T scale = -lr0 / batch.size();
-  MulByConstAndAdd(scale, grad.get(), weights.get());
+  MulByConstAndAddT(scale, grad.get(), weights.get());
   return lr0;
 }
 

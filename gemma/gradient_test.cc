@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <complex>
 #include <random>
 #include <vector>
 
@@ -28,6 +29,7 @@
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "gemma/backprop_scalar.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
 
@@ -48,18 +50,82 @@ namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
 template<size_t kLen>
-void RandInit(std::array<float, kLen>& x, float stddev, std::mt19937& gen) {
-  std::normal_distribution<float> dist(0.0f, stddev);
+void ZeroInit(std::array<float, kLen>& x) {
+  for (size_t i = 0; i < kLen; ++i) {
+    x[i] = 0.0f;
+  }
+}
+
+template<typename T, size_t kLen>
+void RandInit(std::array<T, kLen>& x, T stddev, std::mt19937& gen) {
+  std::normal_distribution<T> dist(0.0, stddev);
   for (size_t i = 0; i < kLen; ++i) {
     x[i] = dist(gen);
   }
 }
 
-template<size_t kLen>
-void ZeroInit(std::array<float, kLen>& x) {
+template<typename T, typename U, size_t kLen>
+void Complexify(const std::array<T, kLen>& x,
+                std::array<std::complex<U>, kLen>& c_x) {
   for (size_t i = 0; i < kLen; ++i) {
-    x[i] = 0.0f;
+    c_x[i] = std::complex<U>(x[i], 0.0);
   }
+}
+
+template<typename T, typename U, size_t kLen>
+void StaticCast(const std::array<T, kLen>& a, std::array<U, kLen>& b) {
+  for (size_t i = 0; i < kLen; ++i) {
+    b[i] = static_cast<U>(a[i]);
+  }
+}
+
+template<typename T, typename U, size_t N>
+void TestNear(const std::array<T, N>& actual, const std::array<U, N>& expected,
+              double max_abs_err, double max_rel_err, int line) {
+  for (size_t i = 0; i < N; ++i) {
+    ASSERT_NEAR(actual[i], expected[i],
+                std::max(max_abs_err, std::abs(expected[i]) * max_rel_err))
+        << "line: " << line << " dim=" << N << " i=" << i;
+  }
+}
+
+template<typename T, typename U, size_t N, typename FUNC>
+void TestGradient(const std::array<T, N>& grad,
+                  std::array<std::complex<U>, N>& x, FUNC func,
+                  U step, T max_abs_err, T max_rel_err, int line) {
+  const U inv_step = 1.0 / step;
+  for (size_t i = 0; i < N; ++i) {
+    const U x0 = std::real(x[i]);
+    const std::complex<U> x1 = std::complex<U>(x0, step);
+    x[i] = x1;
+    const std::complex<U> f1 = func();
+    const T exp_grad = std::imag(f1) * inv_step;
+    x[i] = x0;
+    ASSERT_NEAR(grad[i], exp_grad,
+                std::max(max_abs_err, std::abs(exp_grad) * max_rel_err))
+        << "line: " << line << " dim=" << N << " i=" << i << " f1=" << f1;
+  }
+}
+
+template<size_t N, typename FUNC>
+void TestGradient(const std::array<float, N>& grad,
+                  std::array<std::complex<float>, N>& x, FUNC func,
+                  float max_abs_err, float max_rel_error, int line) {
+  TestGradient(grad, x, func, 1e-30f, max_abs_err, max_rel_error, line);
+}
+
+template<size_t N, typename FUNC>
+void TestGradient(const std::array<float, N>& grad,
+                  std::array<std::complex<double>, N>& x, FUNC func,
+                  float max_abs_err, float max_rel_error, int line) {
+  TestGradient(grad, x, func, 1e-50, max_abs_err, max_rel_error, line);
+}
+
+template<size_t N, typename FUNC>
+void TestGradient(const std::array<double, N>& grad,
+                  std::array<std::complex<double>, N>& x, FUNC func,
+                  double max_abs_err, double max_rel_error, int line) {
+  TestGradient(grad, x, func, 1e-50, max_abs_err, max_rel_error, line);
 }
 
 static constexpr float kDefaultEpsilon = 1.0 / (1 << 20);
@@ -150,38 +216,63 @@ void TestLossGradient() {
 
 void TestMatMulVJP() {
   static const size_t kRows = 8;
-  static const size_t kCols = 16;
+  static const size_t kCols = 64;
   static const size_t kTokens = 5;
   hwy::ThreadPool pool(8);
   std::mt19937 gen(42);
   HWY_ALIGN std::array<float, kRows * kCols> weights;
   HWY_ALIGN std::array<float, kTokens * kCols> x;
-  HWY_ALIGN std::array<float, kTokens * kRows> y;
+  HWY_ALIGN std::array<float, kTokens * kRows> dy;
   HWY_ALIGN std::array<float, kRows * kCols> grad;
   HWY_ALIGN std::array<float, kTokens * kCols> dx;
-  HWY_ALIGN std::array<float, kTokens * kRows> dy;
+  HWY_ALIGN std::array<float, kRows * kCols> f_grad;
+  HWY_ALIGN std::array<float, kTokens * kCols> f_dx;
+  HWY_ALIGN std::array<double, kRows * kCols> d_weights;
+  HWY_ALIGN std::array<double, kTokens * kCols> d_x;
+  HWY_ALIGN std::array<double, kRows * kCols> d_grad;
+  HWY_ALIGN std::array<double, kTokens * kCols> d_dx;
+  HWY_ALIGN std::array<double, kTokens * kRows> d_dy;
+  using TC = std::complex<double>;
+  std::array<TC, kRows * kCols> c_weights;
+  std::array<TC, kTokens * kCols> c_x;
+  std::array<TC, kTokens * kRows> c_y;
+  std::array<TC, kTokens * kRows> c_dy;
 
-  RandInit(weights, 1.0f, gen);
-  RandInit(x, 1.0f, gen);
-  for (size_t t = 0; t < kTokens; ++t) {
-    for (size_t r = 0; r < kRows; ++r) {
-      auto func = [&]() HWY_ATTR {
-        MatVec<kRows, kCols>(weights, 0, &x[t * kCols], nullptr, &y[t * kRows],
-                             pool);
-        return y[t * kRows + r];
-      };
-      ZeroInit(dy);
-      dy[t * kRows + r] = 1.0;
-      ZeroInit(grad);
-      MatMulVJP<kCols, kRows>(weights, x.data(), dy.data(), kTokens, nullptr,
-                              grad, dx.data(), pool);
-      TestGradient(dx, x, func, __LINE__);
-      TestGradient(grad, weights, func, __LINE__);
-    }
+  for (int iter = 0; iter < 10; ++iter) {
+    RandInit(weights, 1.0f * (1 << iter), gen);
+    RandInit(x, 1.0f * (1 << iter), gen);
+    RandInit(dy, 1.0f, gen);
+    Complexify(weights, c_weights);
+    Complexify(x, c_x);
+    Complexify(dy, c_dy);
+    StaticCast(weights, d_weights);
+    StaticCast(x, d_x);
+    StaticCast(dy, d_dy);
+    auto func = [&]() {
+      MatMulT(c_weights.data(), c_x.data(), c_y.data(), kRows, kCols, kTokens);
+      return DotT(c_dy.data(), c_y.data(), kTokens * kRows);
+    };
+    memset(&d_grad, 0, sizeof(d_grad));
+    MatMulVJPT(d_weights.data(), d_x.data(), d_dy.data(), d_grad.data(),
+               d_dx.data(), kRows, kCols, kTokens);
+    TestGradient(d_dx, c_x, func, 1e-12, 1e-12, __LINE__);
+    TestGradient(d_grad, c_weights, func, 1e-12, 1e-12, __LINE__);
+
+    memset(&f_grad, 0, sizeof(f_grad));
+    MatMulVJPT(weights.data(), x.data(), dy.data(), f_grad.data(), f_dx.data(),
+               kRows, kCols, kTokens);
+
+    memset(&grad, 0, sizeof(grad));
+    MatMulVJP<kCols, kRows>(weights, x.data(), dy.data(), kTokens, nullptr,
+                            grad, dx.data(), pool);
+    TestNear(dx, f_dx, 0, 0, __LINE__);
+    TestNear(grad, f_grad, 0, 0, __LINE__);
+    TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
+    TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
   }
 }
 
-#if 1
+#if 0
 void TestEndToEnd() {
   hwy::ThreadPool pool(8);
   std::mt19937 gen(42);
