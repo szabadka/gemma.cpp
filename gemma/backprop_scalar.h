@@ -368,9 +368,9 @@ struct AllActivations {
 };
 
 template<typename T, typename TConfig>
-class AllocationsWrapper {
+class ActivationsWrapper {
  public:
-  AllocationsWrapper()
+  ActivationsWrapper()
       : data_(hwy::AllocateAligned<uint8_t>(
             sizeof(AllActivations<T, TConfig>))),
         activations_(
