@@ -40,7 +40,6 @@ struct ForwardLayer {
   std::array<T, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
   std::array<T, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
   std::array<T, kSeqLen * kFFHiddenDim> ffw_hidden_gated;
-  std::array<T, kSeqLen * kModelDim> ffw_out;
 };
 
 template <typename T, typename TConfig>

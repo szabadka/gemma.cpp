@@ -1856,12 +1856,11 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
     MatVec<kModelDim, kFFHiddenDim>(
         weights.linear_w, 0,
         activations.ffw_hidden_gated.data() + pos * kFFHiddenDim,
-        nullptr, activations.ffw_out.data() + pos * kModelDim, pool);
+        nullptr, output + pos * kModelDim, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    Add(activations.attention_out.data() + pos * kModelDim,
-        activations.ffw_out.data() + pos * kModelDim,
-        output + pos * kModelDim, kModelDim);
+    AddFrom(activations.attention_out.data() + pos * kModelDim,
+            output + pos * kModelDim, kModelDim);
   }
 }
 
