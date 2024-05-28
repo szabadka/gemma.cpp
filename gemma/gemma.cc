@@ -90,22 +90,13 @@ float ScaleWeights(float* data, size_t len) {
   return scale;
 }
 
-template <typename TConfig>
+template <typename T, typename TConfig>
 WeightStorageT AllocateForwardPass() {
-  using TForward = ForwardPass<TConfig>;
+  using TForward = ForwardPass<T, TConfig>;
   hwy::AlignedFreeUniquePtr<uint8_t[]> forward_u8 =
       hwy::AllocateAligned<uint8_t>(sizeof(TForward));
   TForward* forward = reinterpret_cast<TForward*>(forward_u8.get());
   return forward_u8;
-}
-
-template <typename TConfig>
-WeightStorageT AllocateBackwardPass() {
-  using TBackward = BackwardPass<TConfig>;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> backward_u8 =
-      hwy::AllocateAligned<uint8_t>(sizeof(TBackward));
-  TBackward* backward = reinterpret_cast<TBackward*>(backward_u8.get());
-  return backward_u8;
 }
 
 template <typename TConfig>
@@ -1419,20 +1410,9 @@ WeightStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
 WeightStorageT AllocateForwardPassT(gcpp::Model model) {
   switch (model) {
     case Model::GEMMA_2B:
-      return AllocateForwardPass<ConfigGemma2B>();
+      return AllocateForwardPass<float, ConfigGemma2B>();
     case Model::GEMMA_TINY:
-      return AllocateForwardPass<ConfigGemmaTiny>();
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
-WeightStorageT AllocateBackwardPassT(gcpp::Model model) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      return AllocateBackwardPass<ConfigGemma2B>();
-    case Model::GEMMA_TINY:
-      return AllocateBackwardPass<ConfigGemmaTiny>();
+      return AllocateForwardPass<float, ConfigGemmaTiny>();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -1746,9 +1726,8 @@ void RMSNormVJP(const float* HWY_RESTRICT weights, const float* HWY_RESTRICT x,
 
 template <typename TConfig>
 void ApplyForwardLayer(const LayerT<TConfig>& weights,
-                       ForwardLayer<TConfig>& activations,
+                       ForwardLayer<float, TConfig>& activations,
                        size_t num_tokens,
-                       float* HWY_RESTRICT even_odd,
                        float* HWY_RESTRICT output,
                        hwy::ThreadPool& pool) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -1766,7 +1745,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<(kHeads + 2) * kQKVDim, kModelDim>(
         weights.qkv_einsum_w, 0,
-        activations.pre_att_rms_out.data() + pos * kModelDim, even_odd,
+        activations.pre_att_rms_out.data() + pos * kModelDim, nullptr,
         activations.qkv.data() + pos * (kHeads + 2) * kQKVDim, pool);
   }
   const size_t num_tasks = kHeads * num_tokens;
@@ -1834,7 +1813,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
       MatVec<kModelDim, kQKVDim>(
           weights.attn_vec_einsum_w, head * kModelDim * kQKVDim,
           activations.att_out.data() + pos * kHeads * kQKVDim + head * kQKVDim,
-          even_odd, activations.att_post1.data() + pos * kModelDim, pool);
+          nullptr, activations.att_post1.data() + pos * kModelDim, pool);
       AddFrom(activations.att_post1.data() + pos * kModelDim,
               activations.att_post2.data() + pos * kModelDim, kModelDim);
     }
@@ -1853,7 +1832,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kFFHiddenDim * 2, kModelDim>(
         weights.gating_einsum_w, 0,
-        activations.bf_pre_ffw_rms_out.data() + pos * kModelDim, even_odd,
+        activations.bf_pre_ffw_rms_out.data() + pos * kModelDim, nullptr,
         activations.ffw_hidden.data() + pos * kFFHiddenDim * 2, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -1877,7 +1856,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
     MatVec<kModelDim, kFFHiddenDim>(
         weights.linear_w, 0,
         activations.ffw_hidden_gated.data() + pos * kFFHiddenDim,
-        even_odd, activations.ffw_out.data() + pos * kModelDim, pool);
+        nullptr, activations.ffw_out.data() + pos * kModelDim, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     Add(activations.attention_out.data() + pos * kModelDim,
@@ -1888,12 +1867,11 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
 
 template <typename TConfig>
 void LayerVJP(const Layer<float, TConfig>& weights,
-              const ForwardLayer<TConfig>& forward,
+              const ForwardLayer<float, TConfig>& forward,
               const float* HWY_RESTRICT next_layer_grad,
               size_t num_tokens,
-              float* HWY_RESTRICT even_odd,
               Layer<float, TConfig>& grad,
-              ForwardLayer<TConfig>& backward,
+              ForwardLayer<float, TConfig>& backward,
               hwy::ThreadPool& pool) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
@@ -1905,7 +1883,7 @@ void LayerVJP(const Layer<float, TConfig>& weights,
   HWY_ASSERT(num_tokens <= kSeqLen);
   MatMulVJP<kFFHiddenDim, kModelDim>(
       weights.linear_w, forward.ffw_hidden_gated.data(), next_layer_grad,
-      num_tokens, even_odd, grad.linear_w, backward.ffw_hidden_gated.data(),
+      num_tokens, nullptr, grad.linear_w, backward.ffw_hidden_gated.data(),
       pool);
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
@@ -1930,7 +1908,7 @@ void LayerVJP(const Layer<float, TConfig>& weights,
   MatMulVJP<kModelDim, kFFHiddenDim * 2>(
       weights.gating_einsum_w,
       forward.bf_pre_ffw_rms_out.data(), backward.ffw_hidden.data(),
-      num_tokens, even_odd, grad.gating_einsum_w,
+      num_tokens, nullptr, grad.gating_einsum_w,
       backward.bf_pre_ffw_rms_out.data(), pool);
   RMSNormVJP(weights.pre_ffw_norm_scale.data(),
              forward.attention_out.data(),
@@ -1943,7 +1921,7 @@ void LayerVJP(const Layer<float, TConfig>& weights,
   }
   MatMulVJP<kHeads * kQKVDim, kModelDim>(
         weights.attn_vec_einsum_w, forward.att_out.data(),
-        backward.attention_out.data(), num_tokens, even_odd,
+        backward.attention_out.data(), num_tokens, nullptr,
         grad.attn_vec_einsum_w, backward.att_out.data(), pool);
 
   hwy::ZeroBytes(backward.qkv.data(),
@@ -2016,7 +1994,7 @@ void LayerVJP(const Layer<float, TConfig>& weights,
 
   MatMulVJP<(kHeads + 2) * kQKVDim, kModelDim>(
         weights.qkv_einsum_w, forward.pre_att_rms_out.data(),
-        backward.qkv.data(), num_tokens, even_odd,
+        backward.qkv.data(), num_tokens, nullptr,
         grad.qkv_einsum_w, backward.pre_att_rms_out.data(), pool);
   RMSNormVJP(weights.pre_attention_norm_scale.data(),
              forward.input.data(),
@@ -2032,12 +2010,12 @@ void LayerVJP(const Layer<float, TConfig>& weights,
 template <size_t kModelDim, size_t kVocabSize, typename ArrayT>
 void ComputeLogits(const ArrayT& weights,  // kVocabSize * kModelDim
                    const float* HWY_RESTRICT x,  // num_tokens * kModelDim
-                   size_t num_tokens, float* HWY_RESTRICT even_odd,
+                   size_t num_tokens,
                    float* HWY_RESTRICT output,  // num_tokens * kVocabSize
                    hwy::ThreadPool& pool) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kVocabSize, kModelDim>(
-        weights, 0, x + pos * kModelDim, even_odd, output + pos * kVocabSize,
+        weights, 0, x + pos * kModelDim, nullptr, output + pos * kVocabSize,
         pool);
   }
 }
@@ -2077,7 +2055,8 @@ float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
   const size_t num_tokens = prompt.size() - 1;
 
   const auto& weights = *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
-  auto& forward = *reinterpret_cast<ForwardPass<TConfig>*>(forward_u8.get());
+  auto& forward =
+      *reinterpret_cast<ForwardPass<float, TConfig>*>(forward_u8.get());
 
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
                  forward.layers[0].input.data(), kModelDim);
@@ -2087,7 +2066,7 @@ float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
                                  forward.layers[layer + 1].input.data() :
                                  forward.final_layer_output.data();
     ApplyForwardLayer(*weights.GetLayer(layer), forward.layers[layer],
-                      num_tokens, forward.even_odd.data(), output, pool);
+                      num_tokens, output, pool);
   }
 
   ApplyRMSNorm(weights.final_norm_scale.data(),
@@ -2096,7 +2075,7 @@ float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
 
   ComputeLogits<kModelDim, kVocabSize>(
       weights.embedder_input_embedding, forward.final_norm_output.data(),
-      num_tokens, forward.even_odd.data(), forward.raw_logits.data(), pool);
+      num_tokens, forward.raw_logits.data(), pool);
 
   ApplySoftcap(forward.raw_logits.data(), forward.logits.data(),
                num_tokens, kVocabSize, pool);
@@ -2127,9 +2106,9 @@ void CrossEntropyLossBackwardStep(const std::vector<int>& prompt,
   using TWeights = WeightsT<TConfig>;
   const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
-  const auto& forward =
-      *reinterpret_cast<const ForwardPass<TConfig>*>(forward_u8.get());
-  auto& backward = *reinterpret_cast<ForwardPass<TConfig>*>(backward_u8.get());
+  using TAct = ForwardPass<float, TConfig>;
+  const auto& forward = *reinterpret_cast<const TAct*>(forward_u8.get());
+  auto& backward = *reinterpret_cast<TAct*>(backward_u8.get());
 
   LossGradient<kVocabSize>(forward.logits.data(), prompt, context_size,
                            backward.logits.data(), pool);
@@ -2137,7 +2116,7 @@ void CrossEntropyLossBackwardStep(const std::vector<int>& prompt,
              kVocabSize, backward.raw_logits.data(), pool);
   MatMulVJP<kModelDim, kVocabSize>(
       weights.embedder_input_embedding, forward.final_norm_output.data(),
-      backward.raw_logits.data(), num_tokens, backward.even_odd.data(),
+      backward.raw_logits.data(), num_tokens,
       grad.embedder_input_embedding, backward.final_norm_output.data(),
       pool);
 
@@ -2153,8 +2132,7 @@ void CrossEntropyLossBackwardStep(const std::vector<int>& prompt,
         layer + 1 < kLayers ? backward.layers[layer + 1].input.data()
                             : backward.final_layer_output.data();
     LayerVJP(*weights.GetLayer(layer), forward.layers[layer], next_layer_grad,
-             num_tokens, backward.even_odd.data(),
-             *grad.GetLayer(layer), backward.layers[layer], pool);
+             num_tokens, *grad.GetLayer(layer), backward.layers[layer], pool);
   }
 
   InputEmbeddingVJP(weights.embedder_input_embedding.data(), prompt,
@@ -2210,7 +2188,6 @@ namespace gcpp {
 
 HWY_EXPORT(AllocateWeightsT);
 HWY_EXPORT(AllocateForwardPassT);
-HWY_EXPORT(AllocateBackwardPassT);
 HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(UpdateWeightsT);
@@ -2414,10 +2391,6 @@ WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {
 
 WeightStorageT AllocateForwardPass(Model model) {
   return HWY_DYNAMIC_DISPATCH(AllocateForwardPassT)(model);
-}
-
-WeightStorageT AllocateBackwardPass(Model model) {
-  return HWY_DYNAMIC_DISPATCH(AllocateBackwardPassT)(model);
 }
 
 void LogWeightStats(Model model, const WeightStorageT& weights) {

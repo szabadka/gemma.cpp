@@ -26,6 +26,7 @@
 #include <complex>
 #include <vector>
 
+#include "gemma/activations.h"
 #include "gemma/weights.h"
 
 namespace gcpp {

@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "compression/io.h"  // Path
+#include "gemma/activations.h"
 #include "gemma/configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
@@ -132,62 +133,8 @@ WeightStorageT LoadWeights(const Path& weights, Model model_type,
 
 enum class InitMode { RAND_INIT, ZERO_INIT };
 
-template <typename TConfig>
-struct ForwardLayer {
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-  std::array<float, kSeqLen * kModelDim> input;
-  std::array<float, kSeqLen * kModelDim> pre_att_rms_out;
-  std::array<float, kSeqLen * (kHeads + 2) * kQKVDim> qkv;
-  std::array<float, kSeqLen * kHeads * kSeqLen> att;
-  std::array<float, kSeqLen * kHeads * kQKVDim> att_out;
-  std::array<float, kSeqLen * kModelDim> att_post1;
-  std::array<float, kSeqLen * kModelDim> att_post2;
-  std::array<float, kSeqLen * kModelDim> attention_out;
-  std::array<float, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
-  std::array<float, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
-  std::array<float, kSeqLen * kFFHiddenDim> ffw_hidden_gated;
-  std::array<float, kSeqLen * kModelDim> ffw_out;
-};
-
-template <typename TConfig>
-struct ForwardPass {
-  ForwardPass() {}  // prevents placement-new calling memset
-
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kLayers = TConfig::kLayers;
-
-  std::array<ForwardLayer<TConfig>, kLayers> layers;
-  std::array<float, kSeqLen * kModelDim> final_layer_output;
-  std::array<float, kSeqLen * kModelDim> final_norm_output;
-  std::array<float, kSeqLen * kVocabSize> raw_logits;
-  std::array<float, kSeqLen * kVocabSize> logits;
-
-  std::array<float, kModelDim * kMaxThreads> even_odd;
-};
-
-template <typename TConfig>
-struct BackwardPass {
-  BackwardPass() {}
-
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-
-  std::array<float, kSeqLen * kVocabSize> logits;
-  std::array<float, kSeqLen * kVocabSize> raw_logits;
-  std::array<float, kSeqLen * kModelDim> final_norm_output;
-  std::array<float, kSeqLen * kModelDim> final_layer_output;
-};
-
 WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
 WeightStorageT AllocateForwardPass(Model model);
-WeightStorageT AllocateBackwardPass(Model model);
 
 void LogWeightStats(Model model, const WeightStorageT& weights);
 

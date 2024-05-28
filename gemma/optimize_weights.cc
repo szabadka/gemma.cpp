@@ -144,9 +144,9 @@ void Run(Args& args) {
   WeightStorageT grad = AllocateWeights(args.model_type, pool);
   WeightStorageT forward = AllocateForwardPass(args.model_type);
   WeightStorageT backward = AllocateForwardPass(args.model_type);
-  auto* ftiny = reinterpret_cast<ForwardPass<ConfigGemmaTiny>*>(forward.get());
+  auto* ftiny = reinterpret_cast<ForwardPass<float, ConfigGemmaTiny>*>(forward.get());
   auto* btiny =
-      reinterpret_cast<ForwardPass<ConfigGemmaTiny>*>(backward.get());
+      reinterpret_cast<ForwardPass<float, ConfigGemmaTiny>*>(backward.get());
 
   InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
   //RandInit(ftiny->layers[0].input, gen);
