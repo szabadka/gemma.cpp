@@ -187,6 +187,7 @@ TEST(BackPropTest, SoftmaxVJP) {
   using T = double;
   using TC = std::complex<T>;
   std::array<T, N> x;
+  std::array<T, N> y;
   std::array<T, N> dx;
   std::array<T, N> dy;
   std::array<TC, N> c_x;
@@ -200,7 +201,8 @@ TEST(BackPropTest, SoftmaxVJP) {
       Softmax(c_x.data(), c_y.data(), N);
       return DotT(dy.data(), c_y.data(), N);
     };
-    SoftmaxVJP(x.data(), dy.data(), dx.data(), N);
+    Softmax(x.data(), y.data(), N);
+    SoftmaxVJP(y.data(), dy.data(), dx.data(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
@@ -214,6 +216,7 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
   using T = double;
   using TC = std::complex<T>;
   std::array<T, N> x;
+  std::array<T, N> y;
   std::array<T, N> dx = {};
   std::array<T, N> dy;
   std::array<TC, N> c_x;
@@ -227,7 +230,8 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
       MaskedSoftmax(c_x.data(), c_y.data(), kTokens, kHeads, kSeqLen);
       return DotT(dy.data(), c_y.data(), N);
     };
-    MaskedSoftmaxVJP(x.data(), dy.data(), dx.data(), kTokens, kHeads, kSeqLen);
+    MaskedSoftmax(x.data(), y.data(), kTokens, kHeads, kSeqLen);
+    MaskedSoftmaxVJP(y.data(), dy.data(), dx.data(), kTokens, kHeads, kSeqLen);
     TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
   }
 }

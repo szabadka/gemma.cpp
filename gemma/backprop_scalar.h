@@ -193,9 +193,7 @@ void Softmax(const T* x, T* out, size_t N) {
 }
 
 template<typename T>
-void SoftmaxVJP(const T* x, const T* dy, T* dx, size_t N) {
-  std::vector<T> y(N);
-  Softmax(x, &y[0], N);
+void SoftmaxVJP(const T* y, const T* dy, T* dx, size_t N) {
   T sum = {};
   for (size_t i = 0; i < N; ++i) {
     sum += y[i] * dy[i];
@@ -213,9 +211,9 @@ void Softmax(const T* x, T* out, size_t N, size_t K) {
 }
 
 template<typename T>
-void SoftmaxVJP(const T* x, const T* dy, T* dx, size_t N, size_t K) {
+void SoftmaxVJP(const T* y, const T* dy, T* dx, size_t N, size_t K) {
   for (size_t i = 0; i < K; ++i) {
-    SoftmaxVJP(x + i * N, dy + i * N, dx + i * N, N);
+    SoftmaxVJP(y + i * N, dy + i * N, dx + i * N, N);
   }
 }
 
@@ -482,12 +480,12 @@ void MaskedSoftmax(const T* x, T* y, size_t num_tokens,
 }
 
 template<typename T>
-void MaskedSoftmaxVJP(const T* x, const T* dy, T* dx, size_t num_tokens,
+void MaskedSoftmaxVJP(const T* y, const T* dy, T* dx, size_t num_tokens,
                       size_t kHeads, size_t kSeqLen) {
   for (size_t head = 0; head < kHeads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
       size_t offset = pos * kHeads * kSeqLen + head * kSeqLen;
-      SoftmaxVJP(x + offset, dy + offset, dx + offset, pos + 1);
+      SoftmaxVJP(y + offset, dy + offset, dx + offset, pos + 1);
     }
   }
 }
@@ -603,7 +601,7 @@ void AttentionBlockVJP(const Layer<T, TConfig>& weights,
                     backward.att_sm.data(), num_tokens, kHeads, kQKVDim,
                     kSeqLen);
 
-  MaskedSoftmaxVJP(forward.att.data(), backward.att_sm.data(),
+  MaskedSoftmaxVJP(forward.att_sm.data(), backward.att_sm.data(),
                    backward.att.data(), num_tokens, kHeads, kSeqLen);
 
   MaskedAttentionVJP(forward.qkv.data(), backward.att.data(),
@@ -790,7 +788,7 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   CrossEntropyLossGrad(forward.probs.data(), backward.probs.data(), prompt,
                        kVocabSize);
 
-  SoftmaxVJP(forward.logits.data(), backward.probs.data(),
+  SoftmaxVJP(forward.probs.data(), backward.probs.data(),
              backward.logits.data(), kVocabSize, num_tokens);
 
   SoftcapVJP(forward.raw_logits.data(), backward.logits.data(),
