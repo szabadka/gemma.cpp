@@ -258,6 +258,7 @@ TEST(BackPropTest, SoftcapVJP) {
       Softcap(c_x.data(), c_y.data(), N);
       return DotT(dy.data(), c_y.data(), N);
     };
+    Softcap(x.data(), x.data(), N);
     SoftcapVJP(x.data(), dy.data(), dx.data(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }

@@ -227,9 +227,7 @@ void Softcap(const T* x, T* out, size_t N) {
 }
 
 template<typename T>
-void SoftcapVJP(const T* x, const T* dy, T* dx, size_t N) {
-  std::vector<T> y(N);
-  Softcap(x, &y[0], N);
+void SoftcapVJP(const T* y, const T* dy, T* dx, size_t N) {
   T cap = 30.0;
   T inv_cap = T(1.0) / cap;
   for (size_t i = 0; i < N; ++i) {
@@ -362,6 +360,7 @@ struct AllActivations {
   std::array<T, kSeqLen * kModelDim> final_norm_output;
   std::array<T, kSeqLen * kVocabSize> raw_logits;
   std::array<T, kSeqLen * kVocabSize> logits;
+  std::array<T, kSeqLen * kVocabSize> probs;
 };
 
 template<typename T, typename TConfig>
@@ -767,9 +766,11 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
   Softcap(forward.raw_logits.data(), forward.logits.data(),
           num_tokens * kVocabSize);
 
-  Softmax(forward.logits.data(), kVocabSize, num_tokens);
+  memcpy(forward.probs.data(), forward.logits.data(),
+         num_tokens * kVocabSize * sizeof(forward.logits[0]));
+  Softmax(forward.probs.data(), kVocabSize, num_tokens);
 
-  return CrossEntropyLoss(forward.logits.data(), prompt, kVocabSize);
+  return CrossEntropyLoss(forward.probs.data(), prompt, kVocabSize);
 }
 
 template<typename T, typename TConfig>
@@ -783,13 +784,13 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   static constexpr size_t kLayers = TConfig::kLayers;
   const size_t num_tokens = prompt.tokens.size() - 1;
 
-  CrossEntropyLossGrad(forward.logits.data(), backward.logits.data(), prompt,
+  CrossEntropyLossGrad(forward.probs.data(), backward.logits.data(), prompt,
                        kVocabSize);
 
-  SoftmaxVJP(forward.logits.data(), backward.logits.data(),
+  SoftmaxVJP(forward.probs.data(), backward.logits.data(),
              kVocabSize, num_tokens);
 
-  SoftcapVJP(forward.raw_logits.data(), backward.logits.data(),
+  SoftcapVJP(forward.logits.data(), backward.logits.data(),
              backward.raw_logits.data(), num_tokens * kVocabSize);
 
   MatMulVJPT(weights.embedder_input_embedding.data(),
