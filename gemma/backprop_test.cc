@@ -187,7 +187,6 @@ TEST(BackPropTest, SoftmaxVJP) {
   using T = double;
   using TC = std::complex<T>;
   std::array<T, N> x;
-  std::array<T, N> y;
   std::array<T, N> dx;
   std::array<T, N> dy;
   std::array<TC, N> c_x;
@@ -198,12 +197,13 @@ TEST(BackPropTest, SoftmaxVJP) {
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      Softmax(c_x.data(), c_y.data(), N);
+      memcpy(c_y.data(), c_x.data(), sizeof(c_x));
+      Softmax(c_y.data(), N);
       return DotT(dy.data(), c_y.data(), N);
     };
-    Softmax(x.data(), y.data(), N);
+    Softmax(x.data(), N);
     memcpy(dx.data(), dy.data(), N * sizeof(dx[0]));
-    SoftmaxVJP(y.data(), dx.data(), N);
+    SoftmaxVJP(x.data(), dx.data(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
@@ -217,9 +217,8 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
   using T = double;
   using TC = std::complex<T>;
   std::array<T, N> x;
-  std::array<T, N> y;
-  std::array<T, N> dx = {};
   std::array<T, N> dy;
+  std::array<T, N> dx = {};
   std::array<TC, N> c_x;
   std::array<TC, N> c_y;
 
@@ -228,12 +227,14 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      MaskedSoftmax(c_x.data(), c_y.data(), kTokens, kHeads, kSeqLen);
+      memcpy(c_y.data(), c_x.data(),
+             kTokens * kHeads * kSeqLen * sizeof(c_x[0]));
+      MaskedSoftmax(c_y.data(), kTokens, kHeads, kSeqLen);
       return DotT(dy.data(), c_y.data(), N);
     };
-    MaskedSoftmax(x.data(), y.data(), kTokens, kHeads, kSeqLen);
+    MaskedSoftmax(x.data(), kTokens, kHeads, kSeqLen);
     memcpy(dx.data(), dy.data(), kTokens * kHeads * kSeqLen * sizeof(dx[0]));
-    MaskedSoftmaxVJP(y.data(), dx.data(), kTokens, kHeads, kSeqLen);
+    MaskedSoftmaxVJP(x.data(), dx.data(), kTokens, kHeads, kSeqLen);
     TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
   }
 }
@@ -278,7 +279,7 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
     prompt.context_size = 1 + (iter % 6);
     RandInit(x, 1.0 * (1 << iter), gen);
     Softcap(x.data(), x.data(), V * K);
-    Softmax(x.data(), x.data(), V, K);
+    Softmax(x.data(), V, K);
     CrossEntropyLossGrad(x.data(), dx.data(), prompt, V);
     Complexify(x, c_x);
     auto func = [&]() {

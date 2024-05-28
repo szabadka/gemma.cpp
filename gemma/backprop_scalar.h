@@ -174,7 +174,7 @@ void RMSNormVJP(const T* w, const T* x, const T* dy, T* dw, T* dx,
 }
 
 template<typename T>
-void Softmax(const T* x, T* out, size_t N) {
+void Softmax(T* x, size_t N) {
   T sum = {};
   auto maxreal = std::real(x[0]);
   for (size_t i = 1; i < N; ++i) {
@@ -183,12 +183,12 @@ void Softmax(const T* x, T* out, size_t N) {
     }
   }
   for (size_t i = 0; i < N; ++i) {
-    out[i] = std::exp(x[i] - maxreal);
-    sum += out[i];
+    x[i] = std::exp(x[i] - maxreal);
+    sum += x[i];
   }
   T scale = T(1.0) / sum;
   for (size_t i = 0; i < N; ++i) {
-    out[i] *= scale;
+    x[i] *= scale;
   }
 }
 
@@ -204,9 +204,9 @@ void SoftmaxVJP(const T* y, T* dy, size_t N) {
 }
 
 template<typename T>
-void Softmax(const T* x, T* out, size_t N, size_t K) {
+void Softmax(T* x, size_t N, size_t K) {
   for (size_t i = 0; i < K; ++i) {
-    Softmax(x + i * N, out + i * N, N);
+    Softmax(x + i * N, N);
   }
 }
 
@@ -328,7 +328,6 @@ struct AttnActivations {
   std::array<T, kSeqLen * kModelDim> pre_att_rms_out;
   std::array<T, kSeqLen * (kHeads + 2) * kQKVDim> qkv;
   std::array<T, kSeqLen * kHeads * kSeqLen> att;
-  std::array<T, kSeqLen * kHeads * kSeqLen> att_sm;
   std::array<T, kSeqLen * kHeads * kQKVDim> att_out;
   std::array<T, kSeqLen * kModelDim> att_post2;
 };
@@ -363,7 +362,6 @@ struct AllActivations {
   std::array<T, kSeqLen * kModelDim> final_norm_output;
   std::array<T, kSeqLen * kVocabSize> raw_logits;
   std::array<T, kSeqLen * kVocabSize> logits;
-  std::array<T, kSeqLen * kVocabSize> probs;
 };
 
 template<typename T, typename TConfig>
@@ -469,12 +467,12 @@ void MaskedAttentionVJP(const T* qkv, const T* doutput, T* dqkv,
 }
 
 template<typename T>
-void MaskedSoftmax(const T* x, T* y, size_t num_tokens,
-                   size_t kHeads, size_t kSeqLen) {
+void MaskedSoftmax(T* x, size_t num_tokens, size_t kHeads, size_t kSeqLen) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     for (size_t head = 0; head < kHeads; ++head) {
       size_t offset = pos * kHeads * kSeqLen + head * kSeqLen;
-      Softmax(x + offset, y + offset, pos + 1);
+      Softmax(x + offset, pos + 1);
+      memset(x + offset + pos + 1, 0, (kSeqLen - pos - 1) * sizeof(T));
     }
   }
 }
@@ -566,10 +564,9 @@ void ApplyAttentionBlock(const Layer<T, TConfig>& weights,
   MaskedAttention(activations.qkv.data(), activations.att.data(),
                   num_tokens, kHeads, kQKVDim, kSeqLen);
 
-  MaskedSoftmax(activations.att.data(), activations.att_sm.data(),
-                num_tokens, kHeads, kSeqLen);
+  MaskedSoftmax(activations.att.data(), num_tokens, kHeads, kSeqLen);
 
-  MixByAttention(activations.qkv.data(), activations.att_sm.data(),
+  MixByAttention(activations.qkv.data(), activations.att.data(),
                  activations.att_out.data(), num_tokens, kHeads, kQKVDim,
                  kSeqLen);
 
@@ -597,15 +594,15 @@ void AttentionBlockVJP(const Layer<T, TConfig>& weights,
                      backward.att_out.data(),
                      kHeads, kModelDim, kQKVDim, num_tokens);
 
-  MixByAttentionVJP(forward.qkv.data(), forward.att_sm.data(),
+  MixByAttentionVJP(forward.qkv.data(), forward.att.data(),
                     backward.att_out.data(), backward.qkv.data(),
-                    backward.att_sm.data(), num_tokens, kHeads, kQKVDim,
+                    backward.att.data(), num_tokens, kHeads, kQKVDim,
                     kSeqLen);
 
-  MaskedSoftmaxVJP(forward.att_sm.data(), backward.att_sm.data(),
+  MaskedSoftmaxVJP(forward.att.data(), backward.att.data(),
                    num_tokens, kHeads, kSeqLen);
 
-  MaskedAttentionVJP(forward.qkv.data(), backward.att_sm.data(),
+  MaskedAttentionVJP(forward.qkv.data(), backward.att.data(),
                      backward.qkv.data(), num_tokens, kHeads, kQKVDim, kSeqLen);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -770,9 +767,9 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
   Softcap(forward.raw_logits.data(), forward.logits.data(),
           num_tokens * kVocabSize);
 
-  Softmax(forward.logits.data(), forward.probs.data(), kVocabSize, num_tokens);
+  Softmax(forward.logits.data(), kVocabSize, num_tokens);
 
-  return CrossEntropyLoss(forward.probs.data(), prompt, kVocabSize);
+  return CrossEntropyLoss(forward.logits.data(), prompt, kVocabSize);
 }
 
 template<typename T, typename TConfig>
@@ -786,13 +783,13 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   static constexpr size_t kLayers = TConfig::kLayers;
   const size_t num_tokens = prompt.tokens.size() - 1;
 
-  CrossEntropyLossGrad(forward.probs.data(), backward.probs.data(), prompt,
+  CrossEntropyLossGrad(forward.logits.data(), backward.logits.data(), prompt,
                        kVocabSize);
 
-  SoftmaxVJP(forward.probs.data(), backward.probs.data(),
+  SoftmaxVJP(forward.logits.data(), backward.logits.data(),
              kVocabSize, num_tokens);
 
-  SoftcapVJP(forward.raw_logits.data(), backward.probs.data(),
+  SoftcapVJP(forward.raw_logits.data(), backward.logits.data(),
              backward.raw_logits.data(), num_tokens * kVocabSize);
 
   MatMulVJPT(weights.embedder_input_embedding.data(),
