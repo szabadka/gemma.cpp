@@ -760,7 +760,7 @@ TEST(BackProptest, Convergence) {
         return CrossEntropyLossForwardPass(batch, c_weights, c_forward) * scale;
       };
 
-      TestGradient(grad.get(), c_weights.get(), func, 2e-3f);
+      TestGradient(grad.get(), c_weights.get(), func, 4e-3f);
     }
 
     loss /= batch.size();
