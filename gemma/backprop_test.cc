@@ -255,11 +255,13 @@ TEST(BackPropTest, SoftcapVJP) {
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      Softcap(c_x.data(), c_y.data(), N);
+      memcpy(c_y.data(), c_x.data(), N * sizeof(c_x[0]));
+      Softcap(c_y.data(), N);
       return DotT(dy.data(), c_y.data(), N);
     };
-    Softcap(x.data(), x.data(), N);
-    SoftcapVJP(x.data(), dy.data(), dx.data(), N);
+    Softcap(x.data(), N);
+    memcpy(dx.data(), dy.data(), N * sizeof(dx[0]));
+    SoftcapVJP(x.data(), dx.data(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
@@ -279,7 +281,7 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
   for (int iter = 0; iter < 10; ++iter) {
     prompt.context_size = 1 + (iter % 6);
     RandInit(x, 1.0 * (1 << iter), gen);
-    Softcap(x.data(), x.data(), V * K);
+    Softcap(x.data(), V * K);
     Softmax(x.data(), V, K);
     CrossEntropyLossGrad(x.data(), dx.data(), prompt, V);
     Complexify(x, c_x);

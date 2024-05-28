@@ -218,21 +218,21 @@ void SoftmaxVJP(const T* y, T* dy, size_t N, size_t K) {
 }
 
 template<typename T>
-void Softcap(const T* x, T* out, size_t N) {
+void Softcap(T* x, size_t N) {
   T cap = 30.0;
   T inv_cap = T(1.0) / cap;
   for (size_t i = 0; i < N; ++i) {
-    out[i] = cap * std::tanh(x[i] * inv_cap);
+    x[i] = cap * std::tanh(x[i] * inv_cap);
   }
 }
 
 template<typename T>
-void SoftcapVJP(const T* y, const T* dy, T* dx, size_t N) {
+void SoftcapVJP(const T* y, T* dy, size_t N) {
   T cap = 30.0;
   T inv_cap = T(1.0) / cap;
   for (size_t i = 0; i < N; ++i) {
     T scaled = y[i] * inv_cap;
-    dx[i] = dy[i] * (T(1.0) - scaled * scaled);
+    dy[i] *= (T(1.0) - scaled * scaled);
   }
 }
 
@@ -358,7 +358,6 @@ struct AllActivations {
   std::array<LayerActivations<T, TConfig>, kLayers> layers;
   std::array<T, kSeqLen * kModelDim> final_layer_output;
   std::array<T, kSeqLen * kModelDim> final_norm_output;
-  std::array<T, kSeqLen * kVocabSize> raw_logits;
   std::array<T, kSeqLen * kVocabSize> logits;
   std::array<T, kSeqLen * kVocabSize> probs;
 };
@@ -761,10 +760,9 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
 
   MatMulT(weights.embedder_input_embedding.data(),
           forward.final_norm_output.data(),
-          forward.raw_logits.data(), kVocabSize, kModelDim, num_tokens);
+          forward.logits.data(), kVocabSize, kModelDim, num_tokens);
 
-  Softcap(forward.raw_logits.data(), forward.logits.data(),
-          num_tokens * kVocabSize);
+  Softcap(forward.logits.data(), num_tokens * kVocabSize);
 
   memcpy(forward.probs.data(), forward.logits.data(),
          num_tokens * kVocabSize * sizeof(forward.logits[0]));
@@ -791,11 +789,11 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
              kVocabSize, num_tokens);
 
   SoftcapVJP(forward.logits.data(), backward.logits.data(),
-             backward.raw_logits.data(), num_tokens * kVocabSize);
+             num_tokens * kVocabSize);
 
   MatMulVJPT(weights.embedder_input_embedding.data(),
              forward.final_norm_output.data(),
-             backward.raw_logits.data(),
+             backward.logits.data(),
              grad.embedder_input_embedding.data(),
              backward.final_norm_output.data(),
              kVocabSize, kModelDim, num_tokens);
