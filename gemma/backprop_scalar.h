@@ -316,37 +316,6 @@ void Rope(std::complex<T>* x, size_t N, int i) {
   Rope(x, T(10000.0), N, i);
 }
 
-template <typename T, typename TConfig>
-struct AllActivations {
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kLayers = TConfig::kLayers;
-
-  std::array<ForwardLayer<T, TConfig>, kLayers> layers;
-  std::array<T, kSeqLen * kModelDim> final_layer_output;
-  std::array<T, kSeqLen * kModelDim> final_norm_output;
-  std::array<T, kSeqLen * kVocabSize> logits;
-  std::array<T, kSeqLen * kVocabSize> probs;
-};
-
-template<typename T, typename TConfig>
-class ActivationsWrapper {
- public:
-  ActivationsWrapper()
-      : data_(hwy::AllocateAligned<uint8_t>(
-            sizeof(AllActivations<T, TConfig>))),
-        activations_(
-            reinterpret_cast<AllActivations<T, TConfig>*>(data_.get())) {}
-
-  const AllActivations<T, TConfig>& get() const { return *activations_; }
-  AllActivations<T, TConfig>& get() { return *activations_; }
-
- private:
-  hwy::AlignedFreeUniquePtr<uint8_t[]> data_;
-  AllActivations<T, TConfig>* activations_;
-};
-
 template<typename T, typename TConfig>
 void MulByConstAndAddT(T c, const Layer<T, TConfig>& x,
                       Layer<T, TConfig>& out) {
@@ -671,7 +640,7 @@ void CrossEntropyLossGrad(const T* x, T* dx, const Prompt& prompt, size_t V) {
 template<typename T, typename TConfig>
 T CrossEntropyLossForwardPass(const Prompt& prompt,
                               const Weights<T, TConfig>& weights,
-                              AllActivations<T, TConfig>& forward) {
+                              ForwardPass<T, TConfig>& forward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
@@ -709,9 +678,9 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
 template<typename T, typename TConfig>
 void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   const Weights<T, TConfig>& weights,
-                                  const AllActivations<T, TConfig>& forward,
+                                  const ForwardPass<T, TConfig>& forward,
                                   Weights<T, TConfig>& grad,
-                                  AllActivations<T, TConfig>& backward) {
+                                  ForwardPass<T, TConfig>& backward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;

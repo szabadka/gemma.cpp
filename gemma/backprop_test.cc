@@ -628,10 +628,10 @@ TEST(BackPropTest, EndToEnd) {
   using TC = std::complex<T>;
   WeightsWrapper<T, TestConfig> weights;
   WeightsWrapper<T, TestConfig> grad;
-  AllActivations<T, TestConfig> forward;
-  AllActivations<T, TestConfig> backward;
+  ForwardPass<T, TestConfig> forward;
+  ForwardPass<T, TestConfig> backward;
   WeightsWrapper<TC, TestConfig> c_weights;
-  AllActivations<TC, TestConfig> c_forward;
+  ForwardPass<TC, TestConfig> c_forward;
 
   printf("Num weights: %zu\n", sizeof(weights.get()) / sizeof(T));
 
@@ -658,7 +658,7 @@ TEST(BackPropTest, EndToEnd) {
 template<typename T, typename TConfig>
 T CrossEntropyLossForwardPass(const std::vector<Prompt>& batch,
                               const WeightsWrapper<T, TConfig>& weights,
-                              AllActivations<T, TConfig>& forward) {
+                              ForwardPass<T, TConfig>& forward) {
   T loss = 0.0;
   for (const Prompt& prompt : batch) {
     loss += CrossEntropyLossForwardPass(prompt, weights.get(), forward);
@@ -673,7 +673,7 @@ T CrossEntropyLossForwardPass(T learning_rate,
                               const WeightsWrapper<T, TConfig>& weights,
                               const WeightsWrapper<T, TConfig>& grad,
                               WeightsWrapper<T, TConfig>& tmp,
-                              AllActivations<T, TConfig>& forward) {
+                              ForwardPass<T, TConfig>& forward) {
   tmp.copy(weights);
   const T scale = -learning_rate / batch.size();
   MulByConstAndAddT(scale, grad.get(), tmp.get());
@@ -684,7 +684,7 @@ template<typename T, typename TConfig>
 T FindOptimalUpdate(const WeightsWrapper<T, TConfig>& grad,
                     WeightsWrapper<T, TConfig>& weights,
                     WeightsWrapper<T, TConfig>& tmp,
-                    AllActivations<T, TConfig>& forward,
+                    ForwardPass<T, TConfig>& forward,
                     const std::vector<Prompt>& batch,
                     T loss, T initial_learning_rate) {
   T lr0 = initial_learning_rate;
@@ -722,10 +722,10 @@ TEST(BackProptest, Convergence) {
   WeightsWrapper<T, TestConfig> weights;
   WeightsWrapper<T, TestConfig> grad;
   WeightsWrapper<T, TestConfig> tmp;
-  AllActivations<T, TestConfig> forward;
-  AllActivations<T, TestConfig> backward;
+  ForwardPass<T, TestConfig> forward;
+  ForwardPass<T, TestConfig> backward;
   WeightsWrapper<TC, TestConfig> c_weights;
-  AllActivations<TC, TestConfig> c_forward;
+  ForwardPass<TC, TestConfig> c_forward;
   constexpr size_t kBatchSize = 10;
   ReverseSequenceSampler training_task({0, 0, 0, 1, 1});
   T learning_rate = 0.01;

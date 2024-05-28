@@ -54,8 +54,23 @@ struct ForwardPass {
   std::array<ForwardLayer<T, TConfig>, kLayers> layers;
   std::array<T, kSeqLen * kModelDim> final_layer_output;
   std::array<T, kSeqLen * kModelDim> final_norm_output;
-  std::array<T, kSeqLen * kVocabSize> raw_logits;
   std::array<T, kSeqLen * kVocabSize> logits;
+  std::array<T, kSeqLen * kVocabSize> probs;
+};
+
+template<typename T, typename TConfig>
+class ActivationsWrapper {
+ public:
+  ActivationsWrapper()
+      : data_(hwy::AllocateAligned<uint8_t>(sizeof(ForwardPass<T, TConfig>))),
+        activations_(reinterpret_cast<ForwardPass<T, TConfig>*>(data_.get())) {}
+
+  const ForwardPass<T, TConfig>& get() const { return *activations_; }
+  ForwardPass<T, TConfig>& get() { return *activations_; }
+
+ private:
+  hwy::AlignedFreeUniquePtr<uint8_t[]> data_;
+  ForwardPass<T, TConfig>* activations_;
 };
 
 }  // namespace gcpp

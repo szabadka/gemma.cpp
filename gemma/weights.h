@@ -147,7 +147,6 @@ void Copy(Weights<T, TConfig>& dst, const Weights<T, TConfig>& src) {
   }
 }
 
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_

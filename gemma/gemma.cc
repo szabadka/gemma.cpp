@@ -2074,9 +2074,9 @@ float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
 
   ComputeLogits<kModelDim, kVocabSize>(
       weights.embedder_input_embedding, forward.final_norm_output.data(),
-      num_tokens, forward.raw_logits.data(), pool);
+      num_tokens, forward.logits.data(), pool);
 
-  ApplySoftcap(forward.raw_logits.data(), forward.logits.data(),
+  ApplySoftcap(forward.logits.data(), forward.logits.data(),
                num_tokens, kVocabSize, pool);
 
   return CrossEntropyLoss<kVocabSize>(forward.logits.data(), prompt,
