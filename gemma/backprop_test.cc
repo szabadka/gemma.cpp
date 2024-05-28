@@ -459,9 +459,9 @@ void Complexify(const Layer<T, TConfig>& w,
 }
 
 template<typename T, typename U, typename TConfig, typename FUNC>
-void TestAttnGradient(const Layer<T, TConfig>& grad,
-                      Layer<std::complex<U>, TConfig>& c_weights,
-                      FUNC func, T max_err) {
+void TestGradient(const Layer<T, TConfig>& grad,
+                  Layer<std::complex<U>, TConfig>& c_weights,
+                  FUNC func, T max_err) {
   TestGradient(grad.pre_attention_norm_scale,
                c_weights.pre_attention_norm_scale,
                func, max_err, max_err, __LINE__);
@@ -469,47 +469,6 @@ void TestAttnGradient(const Layer<T, TConfig>& grad,
                func, max_err, max_err, __LINE__);
   TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
                func, max_err, max_err, __LINE__);
-}
-
-TEST(BackPropTest, AttnBlockVJP) {
-  std::mt19937 gen(42);
-  using T = double;
-  using TC = std::complex<T>;
-  const size_t kOutputSize = TestConfig::kSeqLen * TestConfig::kModelDim;
-  Layer<T, TestConfig> weights;
-  Layer<T, TestConfig> grad;
-  AttnActivations<T, TestConfig> forward;
-  AttnActivations<T, TestConfig> backward = {};
-  Layer<TC, TestConfig> c_weights;
-  AttnActivations<TC, TestConfig> c_forward;
-  std::array<T, kOutputSize> y;
-  std::array<T, kOutputSize> dy;
-  std::array<TC, kOutputSize> c_y;
-  const size_t num_tokens = 3;
-
-  for (size_t iter = 0; iter < 10; ++iter) {
-    RandInit(weights, 1.0, gen);
-    RandInit(forward.input, 1.0, gen);
-    RandInit(dy, 1.0, gen);
-    Complexify(weights, c_weights);
-    Complexify(forward.input, c_forward.input);
-    auto func = [&]() {
-      ApplyAttentionBlock(c_weights, c_forward, num_tokens, c_y.data());
-      return DotT(dy.data(), c_y.data(), num_tokens * TestConfig::kModelDim);
-    };
-    memset(&grad, 0, sizeof(grad));
-    ApplyAttentionBlock(weights, forward, num_tokens, y.data());
-    AttentionBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, 1e-11, 1e-11,
-                 __LINE__);
-    TestAttnGradient(grad, c_weights, func, 1e-11);
-  }
-}
-
-template<typename T, typename U, typename TConfig, typename FUNC>
-void TestFFWGradient(const Layer<T, TConfig>& grad,
-                     Layer<std::complex<U>, TConfig>& c_weights,
-                     FUNC func, T max_err) {
   TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
                func, max_err, max_err, __LINE__);
   TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
@@ -518,17 +477,17 @@ void TestFFWGradient(const Layer<T, TConfig>& grad,
                func, max_err, max_err, __LINE__);
 }
 
-TEST(BackPropTest, FFWBlockVJP) {
+TEST(BackPropTest, LayerVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
   const size_t kOutputSize = TestConfig::kSeqLen * TestConfig::kModelDim;
   Layer<T, TestConfig> weights;
   Layer<T, TestConfig> grad;
-  FFWActivations<T, TestConfig> forward;
-  FFWActivations<T, TestConfig> backward = {};
+  ForwardLayer<T, TestConfig> forward;
+  ForwardLayer<T, TestConfig> backward = {};
   Layer<TC, TestConfig> c_weights;
-  FFWActivations<TC, TestConfig> c_forward;
+  ForwardLayer<TC, TestConfig> c_forward;
   std::array<T, kOutputSize> y;
   std::array<T, kOutputSize> dy;
   std::array<TC, kOutputSize> c_y;
@@ -541,15 +500,15 @@ TEST(BackPropTest, FFWBlockVJP) {
     Complexify(weights, c_weights);
     Complexify(forward.input, c_forward.input);
     auto func = [&]() {
-      ApplyFFWBlock(c_weights, c_forward, num_tokens, c_y.data());
+      ApplyLayer(c_weights, c_forward, num_tokens, c_y.data());
       return DotT(dy.data(), c_y.data(), num_tokens * TestConfig::kModelDim);
     };
     memset(&grad, 0, sizeof(grad));
-    ApplyFFWBlock(weights, forward, num_tokens, y.data());
-    FFWBlockVJP(weights, forward, dy.data(), grad, backward, num_tokens);
+    ApplyLayer(weights, forward, num_tokens, y.data());
+    LayerVJP(weights, forward, dy.data(), grad, backward, num_tokens);
     TestGradient(backward.input, c_forward.input, func, 1e-11, 1e-11,
                  __LINE__);
-    TestFFWGradient(grad, c_weights, func, 1e-11);
+    TestGradient(grad, c_weights, func, 1e-11);
   }
 }
 
@@ -648,6 +607,21 @@ class WeightsWrapper {
   Weights<T, TConfig>* weights_;
 };
 
+template<typename T, typename U, typename TConfig, typename FUNC>
+void TestGradient(const Weights<T, TConfig>& grad,
+                  Weights<std::complex<U>, TConfig>& c_weights,
+                  FUNC func, T max_err) {
+  TestGradient(grad.embedder_input_embedding,
+                 c_weights.embedder_input_embedding,
+                 func,  max_err, max_err, __LINE__);
+  TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
+               func, max_err, max_err, __LINE__);
+  for (int i = 0; i < TestConfig::kLayers; ++i) {
+    TestGradient(*grad.GetLayer(i), *c_weights.GetLayer(i), func, max_err);
+  }
+
+}
+
 TEST(BackPropTest, EndToEnd) {
   std::mt19937 gen(42);
   using T = double;
@@ -677,17 +651,7 @@ TEST(BackPropTest, EndToEnd) {
       return CrossEntropyLossForwardPass(prompt, c_weights.get(), c_forward);
     };
 
-    TestGradient(grad.get().embedder_input_embedding,
-                 c_weights.get().embedder_input_embedding,
-                 func,  1e-11, 1e-11, __LINE__);
-    TestGradient(grad.get().final_norm_scale, c_weights.get().final_norm_scale,
-                 func, 1e-11, 1e-11, __LINE__);
-    for (int i = 0; i < TestConfig::kLayers; ++i) {
-      TestAttnGradient(*grad.get().GetLayer(i),
-                       *c_weights.get().GetLayer(i), func, 1e-11);
-      TestFFWGradient(*grad.get().GetLayer(i),
-                      *c_weights.get().GetLayer(i), func, 1e-11);
-    }
+    TestGradient(grad.get(), c_weights.get(), func, 1e-11);
   }
 }
 
@@ -796,18 +760,7 @@ TEST(BackProptest, Convergence) {
         return CrossEntropyLossForwardPass(batch, c_weights, c_forward) * scale;
       };
 
-      TestGradient(grad.get().embedder_input_embedding,
-                   c_weights.get().embedder_input_embedding,
-                   func,  2e-3f, 4e-3f, __LINE__);
-      TestGradient(grad.get().final_norm_scale,
-                   c_weights.get().final_norm_scale,
-                   func, 2e-3f, 2e-3f, __LINE__);
-      for (int i = 0; i < TestConfig::kLayers; ++i) {
-        TestAttnGradient(*grad.get().GetLayer(i),
-                         *c_weights.get().GetLayer(i), func, 2e-3f);
-        TestFFWGradient(*grad.get().GetLayer(i),
-                        *c_weights.get().GetLayer(i), func, 2e-3f);
-      }
+      TestGradient(grad.get(), c_weights.get(), func, 2e-3f);
     }
 
     loss /= batch.size();

@@ -317,44 +317,13 @@ void Rope(std::complex<T>* x, size_t N, int i) {
 }
 
 template <typename T, typename TConfig>
-struct AttnActivations {
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  std::array<T, kSeqLen * kModelDim> input;
-  std::array<T, kSeqLen * kModelDim> pre_att_rms_out;
-  std::array<T, kSeqLen * (kHeads + 2) * kQKVDim> qkv;
-  std::array<T, kSeqLen * kHeads * kSeqLen> att;
-  std::array<T, kSeqLen * kHeads * kQKVDim> att_out;
-  std::array<T, kSeqLen * kModelDim> att_post2;
-};
-
-template <typename T, typename TConfig>
-struct FFWActivations {
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-  std::array<T, kSeqLen * kModelDim> input;
-  std::array<T, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
-  std::array<T, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
-  std::array<T, kSeqLen * kFFHiddenDim> ffw_hidden_gated;
-};
-
-template <typename T, typename TConfig>
-struct LayerActivations {
-  AttnActivations<T, TConfig> attn;
-  FFWActivations<T, TConfig> ffw;
-};
-
-template <typename T, typename TConfig>
 struct AllActivations {
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
 
-  std::array<LayerActivations<T, TConfig>, kLayers> layers;
+  std::array<ForwardLayer<T, TConfig>, kLayers> layers;
   std::array<T, kSeqLen * kModelDim> final_layer_output;
   std::array<T, kSeqLen * kModelDim> final_norm_output;
   std::array<T, kSeqLen * kVocabSize> logits;
@@ -530,13 +499,14 @@ void MixByAttentionVJP(const T* qkv, const T* attention, const T* doutput,
 }
 
 template<typename T, typename TConfig>
-void ApplyAttentionBlock(const Layer<T, TConfig>& weights,
-                         AttnActivations<T, TConfig>& activations,
-                         size_t num_tokens, T* output) {
+void ApplyLayer(const Layer<T, TConfig>& weights,
+                ForwardLayer<T, TConfig>& activations,
+                size_t num_tokens, T* output) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   static const T kQueryScale = T(1.0) / std::sqrt(T(kQKVDim));
 
   RMSNorm(weights.pre_attention_norm_scale.data(), activations.input.data(),
@@ -568,26 +538,64 @@ void ApplyAttentionBlock(const Layer<T, TConfig>& weights,
                  kSeqLen);
 
   MultiHeadMatMul(weights.attn_vec_einsum_w.data(), activations.att_out.data(),
-                  output, kHeads, kModelDim, kQKVDim, num_tokens);
+                  activations.attention_out.data(), kHeads, kModelDim, kQKVDim,
+                  num_tokens);
 
-  AddFromT(activations.input.data(), output, num_tokens * kModelDim);
+  AddFromT(activations.input.data(), activations.attention_out.data(),
+           num_tokens * kModelDim);
+
+  RMSNorm(weights.pre_ffw_norm_scale.data(), activations.attention_out.data(),
+          activations.bf_pre_ffw_rms_out.data(), kModelDim, num_tokens);
+
+  MatMulT(weights.gating_einsum_w.data(), activations.bf_pre_ffw_rms_out.data(),
+          activations.ffw_hidden.data(), kFFHiddenDim * 2, kModelDim,
+          num_tokens);
+
+  GatedGelu(activations.ffw_hidden.data(), activations.ffw_hidden_gated.data(),
+            kFFHiddenDim, num_tokens);
+
+  MatMulT(weights.linear_w.data(), activations.ffw_hidden_gated.data(),
+          output, kModelDim, kFFHiddenDim, num_tokens);
+
+  AddFromT(activations.attention_out.data(), output, num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>
-void AttentionBlockVJP(const Layer<T, TConfig>& weights,
-                       const AttnActivations<T, TConfig>& forward,
-                       const T* dy,
-                       Layer<T, TConfig>& grad,
-                       AttnActivations<T, TConfig>& backward,
-                       size_t num_tokens) {
+void LayerVJP(const Layer<T, TConfig>& weights,
+              const ForwardLayer<T, TConfig>& forward,
+              const T* dy,
+              Layer<T, TConfig>& grad,
+              ForwardLayer<T, TConfig>& backward,
+              size_t num_tokens) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   static const T kQueryScale = 1.0 / std::sqrt(T(kQKVDim));
 
+  MatMulVJPT(weights.linear_w.data(), forward.ffw_hidden_gated.data(),
+             dy, grad.linear_w.data(), backward.ffw_hidden_gated.data(),
+             kModelDim, kFFHiddenDim, num_tokens);
+
+  GatedGeluVJP(forward.ffw_hidden.data(), backward.ffw_hidden_gated.data(),
+               backward.ffw_hidden.data(), kFFHiddenDim, num_tokens);
+
+  MatMulVJPT(weights.gating_einsum_w.data(), forward.bf_pre_ffw_rms_out.data(),
+             backward.ffw_hidden.data(), grad.gating_einsum_w.data(),
+             backward.bf_pre_ffw_rms_out.data(), kFFHiddenDim * 2, kModelDim,
+             num_tokens);
+
+  RMSNormVJP(weights.pre_ffw_norm_scale.data(), forward.attention_out.data(),
+             backward.bf_pre_ffw_rms_out.data(),
+             grad.pre_ffw_norm_scale.data(), backward.attention_out.data(),
+             kModelDim, num_tokens);
+
+  AddFromT(dy, backward.attention_out.data(), num_tokens * kModelDim);
+
   MultiHeadMatMulVJP(weights.attn_vec_einsum_w.data(), forward.att_out.data(),
-                     dy, grad.attn_vec_einsum_w.data(),
+                     backward.attention_out.data(),
+                     grad.attn_vec_einsum_w.data(),
                      backward.att_out.data(),
                      kHeads, kModelDim, kQKVDim, num_tokens);
 
@@ -623,79 +631,8 @@ void AttentionBlockVJP(const Layer<T, TConfig>& weights,
              grad.pre_attention_norm_scale.data(),
              backward.input.data(), kModelDim, num_tokens);
 
-  AddFromT(dy, backward.input.data(), num_tokens * kModelDim);
-}
-
-template<typename T, typename TConfig>
-void ApplyFFWBlock(const Layer<T, TConfig>& weights,
-                   FFWActivations<T, TConfig>& activations,
-                   size_t num_tokens, T* output) {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-
-  RMSNorm(weights.pre_ffw_norm_scale.data(), activations.input.data(),
-          activations.bf_pre_ffw_rms_out.data(), kModelDim, num_tokens);
-
-  MatMulT(weights.gating_einsum_w.data(), activations.bf_pre_ffw_rms_out.data(),
-          activations.ffw_hidden.data(), kFFHiddenDim * 2, kModelDim,
-          num_tokens);
-
-  GatedGelu(activations.ffw_hidden.data(), activations.ffw_hidden_gated.data(),
-            kFFHiddenDim, num_tokens);
-
-  MatMulT(weights.linear_w.data(), activations.ffw_hidden_gated.data(),
-          output, kModelDim, kFFHiddenDim, num_tokens);
-
-  AddFromT(activations.input.data(), output, num_tokens * kModelDim);
-}
-
-template<typename T, typename TConfig>
-void FFWBlockVJP(const Layer<T, TConfig>& weights,
-                 const FFWActivations<T, TConfig>& forward,
-                 const T* dy,
-                 Layer<T, TConfig>& grad,
-                 FFWActivations<T, TConfig>& backward,
-                 size_t num_tokens) {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-
-  MatMulVJPT(weights.linear_w.data(), forward.ffw_hidden_gated.data(),
-             dy, grad.linear_w.data(), backward.ffw_hidden_gated.data(),
-             kModelDim, kFFHiddenDim, num_tokens);
-
-  GatedGeluVJP(forward.ffw_hidden.data(), backward.ffw_hidden_gated.data(),
-               backward.ffw_hidden.data(), kFFHiddenDim, num_tokens);
-
-  MatMulVJPT(weights.gating_einsum_w.data(), forward.bf_pre_ffw_rms_out.data(),
-             backward.ffw_hidden.data(), grad.gating_einsum_w.data(),
-             backward.bf_pre_ffw_rms_out.data(), kFFHiddenDim * 2, kModelDim,
-             num_tokens);
-
-  RMSNormVJP(weights.pre_ffw_norm_scale.data(), forward.input.data(),
-             backward.bf_pre_ffw_rms_out.data(),
-             grad.pre_ffw_norm_scale.data(), backward.input.data(),
-             kModelDim, num_tokens);
-
-  AddFromT(dy, backward.input.data(), num_tokens * kModelDim);
-}
-
-template<typename T, typename TConfig>
-void ApplyLayer(const Layer<T, TConfig>& weights,
-                LayerActivations<T, TConfig>& forward, size_t num_tokens,
-                T* output) {
-  ApplyAttentionBlock(weights, forward.attn, num_tokens,
-                      forward.ffw.input.data());
-  ApplyFFWBlock(weights, forward.ffw, num_tokens, output);
-}
-
-template<typename T, typename TConfig>
-void LayerVJP(const Layer<T, TConfig>& weights,
-              const LayerActivations<T, TConfig>& forward,  const T* dy,
-              Layer<T, TConfig>& grad,
-              LayerActivations<T, TConfig>& backward, size_t num_tokens) {
-  FFWBlockVJP(weights, forward.ffw, dy, grad, backward.ffw, num_tokens);
-  AttentionBlockVJP(weights, forward.attn, backward.ffw.input.data(),
-                    grad, backward.attn, num_tokens);
+  AddFromT(backward.attention_out.data(), backward.input.data(),
+           num_tokens * kModelDim);
 }
 
 struct Prompt {
@@ -742,11 +679,11 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
 
   const T kEmbScaling = std::sqrt(kModelDim);
   InputEmbedding(weights.embedder_input_embedding.data(), prompt.tokens,
-                 kEmbScaling, forward.layers[0].attn.input.data(), kModelDim);
+                 kEmbScaling, forward.layers[0].input.data(), kModelDim);
 
   for (size_t layer = 0; layer < kLayers; ++layer) {
     T* output = layer + 1 < kLayers ?
-                forward.layers[layer + 1].attn.input.data() :
+                forward.layers[layer + 1].input.data() :
                 forward.final_layer_output.data();
     ApplyLayer(*weights.GetLayer(layer), forward.layers[layer], num_tokens,
                output);
@@ -804,7 +741,7 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
 
   for (int layer = static_cast<int>(kLayers) - 1; layer >= 0; --layer) {
     T* next_layer_grad = layer + 1 < kLayers
-                         ? backward.layers[layer + 1].attn.input.data()
+                         ? backward.layers[layer + 1].input.data()
                          : backward.final_layer_output.data();
     LayerVJP(*weights.GetLayer(layer), forward.layers[layer], next_layer_grad,
              *grad.GetLayer(layer), backward.layers[layer], num_tokens);
@@ -813,7 +750,7 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   const T kEmbScaling = std::sqrt(kModelDim);
   InputEmbeddingVJP(weights.embedder_input_embedding.data(),
                     prompt.tokens, kEmbScaling,
-                    backward.layers[0].attn.input.data(),
+                    backward.layers[0].input.data(),
                     grad.embedder_input_embedding.data(), kModelDim);
 }
 
