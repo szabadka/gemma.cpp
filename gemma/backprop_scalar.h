@@ -68,9 +68,9 @@ void MulByConstAndAddT(T c, const std::array<T, N>& x, std::array<T, N>& out) {
 }
 
 template<typename T>
-void Add(const T* a, const T* b, T* out, size_t N) {
+void AddFromT(const T* a, T* out, size_t N) {
   for (size_t i = 0; i < N; ++i) {
-    out[i] = a[i] + b[i];
+    out[i] += a[i];
   }
 }
 
@@ -339,7 +339,6 @@ struct FFWActivations {
   std::array<T, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
   std::array<T, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
   std::array<T, kSeqLen * kFFHiddenDim> ffw_hidden_gated;
-  std::array<T, kSeqLen * kModelDim> ffw_out;
 };
 
 template <typename T, typename TConfig>
@@ -571,7 +570,7 @@ void ApplyAttentionBlock(const Layer<T, TConfig>& weights,
   MultiHeadMatMul(weights.attn_vec_einsum_w.data(), activations.att_out.data(),
                   output, kHeads, kModelDim, kQKVDim, num_tokens);
 
-  Add(activations.input.data(), output, output, num_tokens * kModelDim);
+  AddFromT(activations.input.data(), output, num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>
@@ -624,7 +623,7 @@ void AttentionBlockVJP(const Layer<T, TConfig>& weights,
              grad.pre_attention_norm_scale.data(),
              backward.input.data(), kModelDim, num_tokens);
 
-  Add(dy, backward.input.data(), backward.input.data(), num_tokens * kModelDim);
+  AddFromT(dy, backward.input.data(), num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>
@@ -645,10 +644,9 @@ void ApplyFFWBlock(const Layer<T, TConfig>& weights,
             kFFHiddenDim, num_tokens);
 
   MatMulT(weights.linear_w.data(), activations.ffw_hidden_gated.data(),
-          activations.ffw_out.data(), kModelDim, kFFHiddenDim, num_tokens);
+          output, kModelDim, kFFHiddenDim, num_tokens);
 
-  Add(activations.input.data(), activations.ffw_out.data(), output,
-      num_tokens * kModelDim);
+  AddFromT(activations.input.data(), output, num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>
@@ -678,7 +676,7 @@ void FFWBlockVJP(const Layer<T, TConfig>& weights,
              grad.pre_ffw_norm_scale.data(), backward.input.data(),
              kModelDim, num_tokens);
 
-  Add(dy, backward.input.data(), backward.input.data(), num_tokens * kModelDim);
+  AddFromT(dy, backward.input.data(), num_tokens * kModelDim);
 }
 
 template<typename T, typename TConfig>
