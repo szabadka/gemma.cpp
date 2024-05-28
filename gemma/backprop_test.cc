@@ -202,7 +202,8 @@ TEST(BackPropTest, SoftmaxVJP) {
       return DotT(dy.data(), c_y.data(), N);
     };
     Softmax(x.data(), y.data(), N);
-    SoftmaxVJP(y.data(), dy.data(), dx.data(), N);
+    memcpy(dx.data(), dy.data(), N * sizeof(dx[0]));
+    SoftmaxVJP(y.data(), dx.data(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
@@ -231,7 +232,8 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
       return DotT(dy.data(), c_y.data(), N);
     };
     MaskedSoftmax(x.data(), y.data(), kTokens, kHeads, kSeqLen);
-    MaskedSoftmaxVJP(y.data(), dy.data(), dx.data(), kTokens, kHeads, kSeqLen);
+    memcpy(dx.data(), dy.data(), kTokens * kHeads * kSeqLen * sizeof(dx[0]));
+    MaskedSoftmaxVJP(y.data(), dx.data(), kTokens, kHeads, kSeqLen);
     TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
   }
 }

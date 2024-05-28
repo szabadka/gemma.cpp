@@ -193,13 +193,13 @@ void Softmax(const T* x, T* out, size_t N) {
 }
 
 template<typename T>
-void SoftmaxVJP(const T* y, const T* dy, T* dx, size_t N) {
+void SoftmaxVJP(const T* y, T* dy, size_t N) {
   T sum = {};
   for (size_t i = 0; i < N; ++i) {
     sum += y[i] * dy[i];
   }
   for (size_t i = 0; i < N; ++i) {
-    dx[i] = y[i] * (dy[i] - sum);
+    dy[i] = y[i] * (dy[i] - sum);
   }
 }
 
@@ -211,9 +211,9 @@ void Softmax(const T* x, T* out, size_t N, size_t K) {
 }
 
 template<typename T>
-void SoftmaxVJP(const T* y, const T* dy, T* dx, size_t N, size_t K) {
+void SoftmaxVJP(const T* y, T* dy, size_t N, size_t K) {
   for (size_t i = 0; i < K; ++i) {
-    SoftmaxVJP(y + i * N, dy + i * N, dx + i * N, N);
+    SoftmaxVJP(y + i * N, dy + i * N, N);
   }
 }
 
@@ -480,12 +480,13 @@ void MaskedSoftmax(const T* x, T* y, size_t num_tokens,
 }
 
 template<typename T>
-void MaskedSoftmaxVJP(const T* y, const T* dy, T* dx, size_t num_tokens,
+void MaskedSoftmaxVJP(const T* y, T* dy, size_t num_tokens,
                       size_t kHeads, size_t kSeqLen) {
   for (size_t head = 0; head < kHeads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
       size_t offset = pos * kHeads * kSeqLen + head * kSeqLen;
-      SoftmaxVJP(y + offset, dy + offset, dx + offset, pos + 1);
+      SoftmaxVJP(y + offset, dy + offset, pos + 1);
+      memset(dy + offset + pos + 1, 0, (kSeqLen - pos - 1) * sizeof(T));
     }
   }
 }
@@ -602,9 +603,9 @@ void AttentionBlockVJP(const Layer<T, TConfig>& weights,
                     kSeqLen);
 
   MaskedSoftmaxVJP(forward.att_sm.data(), backward.att_sm.data(),
-                   backward.att.data(), num_tokens, kHeads, kSeqLen);
+                   num_tokens, kHeads, kSeqLen);
 
-  MaskedAttentionVJP(forward.qkv.data(), backward.att.data(),
+  MaskedAttentionVJP(forward.qkv.data(), backward.att_sm.data(),
                      backward.qkv.data(), num_tokens, kHeads, kQKVDim, kSeqLen);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -789,9 +790,9 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
                        kVocabSize);
 
   SoftmaxVJP(forward.probs.data(), backward.probs.data(),
-             backward.logits.data(), kVocabSize, num_tokens);
+             kVocabSize, num_tokens);
 
-  SoftcapVJP(forward.raw_logits.data(), backward.logits.data(),
+  SoftcapVJP(forward.raw_logits.data(), backward.probs.data(),
              backward.raw_logits.data(), num_tokens * kVocabSize);
 
   MatMulVJPT(weights.embedder_input_embedding.data(),
