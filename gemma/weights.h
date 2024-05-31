@@ -281,6 +281,8 @@ ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
 
 void ZeroInitWeights(Model model, ByteStorageT& weights, hwy::ThreadPool& pool);
 
+void LogWeightStats(Model model, const ByteStorageT& weights);
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_

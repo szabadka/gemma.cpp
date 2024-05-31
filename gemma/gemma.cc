@@ -1399,53 +1399,6 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeightsT(gcpp::Model model,
   }
 }
 
-void LogVec(const char* name, const float* data, size_t len) {
-  float minval = std::numeric_limits<float>::max();
-  float maxval = std::numeric_limits<float>::min();
-  double sum = 0.0f;
-  for (size_t i = 0; i < len; ++i) {
-    minval = std::min(minval, data[i]);
-    maxval = std::max(maxval, data[i]);
-    sum += data[i];
-  }
-  float avg = sum / len;
-  printf("%-20s  %12zu   %13.10f   %8.5f   %13.10f\n",
-         name, len, minval, avg, maxval);
-}
-
-class WeightLogger {
- public:
-  template <size_t N>
-  void operator()(const char* name, const std::array<float, N>& tensor) {
-    LogVec(name, tensor.data(), N);
-    total_weights += N;
-  }
-  size_t total_weights = 0;
-};
-
-template <typename TConfig>
-void LogWeightStats(const ByteStorageT& weights_u8) {
-  const auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-  WeightLogger logger;
-  ForEachTensor1<float, TConfig>(logger, weights);
-  printf("%-20s  %12zu\n", "Total", logger.total_weights);
-}
-
-void LogWeightStatsT(gcpp::Model model, const ByteStorageT& weights) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      return LogWeightStats<ConfigGemma2B>(weights);
-    case Model::GEMMA_7B:
-      return LogWeightStats<ConfigGemma7B>(weights);
-    case Model::GRIFFIN_2B:
-      return LogWeightStats<ConfigGriffin2B>(weights);
-    case Model::GEMMA_TINY:
-      return LogWeightStats<ConfigGemmaTiny>(weights);
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 template <class TConfig>
 void CompressWeights(const Path& weights_path,
                      const Path& compressed_weights_path,
@@ -1501,7 +1454,6 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 
-HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
@@ -1696,10 +1648,6 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
       max_tokens, prompt, kv_cache, pool, verbosity);
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
   return result;
-}
-
-void LogWeightStats(Model model, const ByteStorageT& weights) {
-  return HWY_DYNAMIC_DISPATCH(LogWeightStatsT)(model, weights);
 }
 
 namespace {
