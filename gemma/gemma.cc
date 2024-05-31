@@ -1594,43 +1594,6 @@ void UpdateWeightsT(Model model, const ByteStorageT& grad, float scale,
   }
 }
 
-template <typename TConfig>
-void CrossEntropyLossBackwardPass(const Prompt& prompt,
-                                  const ByteStorageT& weights_u8,
-                                  const ByteStorageT& forward_u8,
-                                  ByteStorageT& grad_u8,
-                                  ByteStorageT& backward_u8,
-                                  hwy::ThreadPool& pool) {
-  using TWeights = WeightsF<TConfig>;
-  const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
-  auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
-  using TAct = ForwardPass<float, TConfig>;
-  const auto& forward = *reinterpret_cast<const TAct*>(forward_u8.get());
-  auto& backward = *reinterpret_cast<TAct*>(backward_u8.get());
-  CrossEntropyLossBackwardPass(prompt, weights, forward, grad, backward, pool);
-}
-
-void CrossEntropyLossBackwardPassT(const Prompt& prompt,
-                                   Model model,
-                                   const ByteStorageT& weights,
-                                   const ByteStorageT& forward,
-                                   ByteStorageT& grad,
-                                   ByteStorageT& backward,
-                                   hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      CrossEntropyLossBackwardPass<ConfigGemma2B>(
-          prompt, weights, forward, grad, backward, pool);
-      break;
-    case Model::GEMMA_TINY:
-      CrossEntropyLossBackwardPass<ConfigGemmaTiny>(
-          prompt, weights, forward, grad, backward, pool);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -1641,7 +1604,6 @@ namespace gcpp {
 HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(UpdateWeightsT);
-HWY_EXPORT(CrossEntropyLossBackwardPassT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
@@ -1851,14 +1813,6 @@ void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
                    ByteStorageT& weights, hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(UpdateWeightsT)(model, grad, scale, weights,
                                               pool);
-}
-
-void CrossEntropyLossBackwardPass(
-    const Prompt& prompt, const Model& model,
-    const ByteStorageT& weights, const ByteStorageT& forward,
-    ByteStorageT& grad, ByteStorageT& backward, hwy::ThreadPool& pool) {
-  return HWY_DYNAMIC_DISPATCH(CrossEntropyLossBackwardPassT)(
-      prompt, model, weights, forward, grad, backward, pool);
 }
 
 namespace {

@@ -48,6 +48,8 @@ set(SOURCES
   compression/test_util.h
   gemma/configs.h
   gemma/activations.cc
+  gemma/backward.cc
+  gemma/backward.h
   gemma/common_scalar.cc
   gemma/forward.cc
   gemma/forward.h

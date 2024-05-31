@@ -18,6 +18,7 @@
 #include <iostream>
 #include <string>
 
+#include "gemma/backward.h"
 #include "gemma/forward.h"
 #include "gemma/gemma.h"
 #include "gemma/sampler.h"
@@ -172,7 +173,7 @@ void Run(Args& args) {
       total_loss += CrossEntropyLossForwardPass(
           args.model_type, prompt, weights, forward, pool);
       CrossEntropyLossBackwardPass(
-          prompt, args.model_type, weights, forward, grad, backward, pool);
+          args.model_type, prompt, weights, forward, grad, backward, pool);
       num_ok += verify(prompt) ? 1 : 0;
     }
     total_loss /= kBatchSize;

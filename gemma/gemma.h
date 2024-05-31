@@ -154,11 +154,6 @@ void InitWeights(Model model, ByteStorageT& weights,
 void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
                    ByteStorageT& weights, hwy::ThreadPool& pool);
 
-void CrossEntropyLossBackwardPass(
-    const Prompt& prompt, const Model& model,
-    const ByteStorageT& weights, const ByteStorageT& forward,
-    ByteStorageT& grad, ByteStorageT& backward, hwy::ThreadPool& pool);
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
