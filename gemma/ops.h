@@ -308,67 +308,8 @@ HWY_INLINE void ToEvenOddF32(const float* HWY_RESTRICT vec_aligned,
   }
 }
 
-// Simple version without tiling nor threading.
-// even_odd is precomputed for the current thread.
-template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
-          typename VecT, typename AddT>
-HWY_INLINE void MatVecAddLoop(const ArrayT& mat, const size_t mat_ofs,
-                              const VecT* HWY_RESTRICT vec_aligned,
-                              const AddT* HWY_RESTRICT add,
-                              float* HWY_RESTRICT even_odd,
-                              float* HWY_RESTRICT out) {
-  PROFILER_ZONE("MatVecAddLoop");
-  const hn::ScalableTag<float> df;
-  constexpr bool kVecEO = false;
-
-  for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
-    const size_t row_ofs = mat_ofs + idx_row * kInner;
-    if constexpr (kAdd) {
-      out[idx_row] = hwy::ConvertScalarTo<float>(add[idx_row]) +
-                     Dot<kVecEO>(df, mat, row_ofs, vec_aligned, kInner);
-    } else {
-      out[idx_row] = Dot<kVecEO>(df, mat, row_ofs, vec_aligned, kInner);
-    }
-  }
-}
-
-#if !defined(HWY_NATIVE_DOT_BF16) || !HWY_NATIVE_DOT_BF16
-template <bool kAdd, size_t kOuter, size_t kInner, typename VecT, typename AddT,
-          size_t kCapacity>
-HWY_INLINE void MatVecAddLoop(
-    const CompressedArray<hwy::bfloat16_t, kCapacity>& mat,
-    const size_t mat_ofs, const VecT* HWY_RESTRICT vec_aligned,
-    const AddT* HWY_RESTRICT add, float* HWY_RESTRICT even_odd,
-    float* HWY_RESTRICT out) {
-  PROFILER_ZONE("MatVecAddLoop");
-  constexpr bool kVecIsEvenOdd = true;
-
-  const hn::ScalableTag<float> df;
-  ToEvenOddF32(vec_aligned, kInner, even_odd);
-  for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
-    const size_t row_ofs = mat_ofs + idx_row * kInner;
-    if constexpr (kAdd) {
-      out[idx_row] = hwy::ConvertScalarTo<float>(add[idx_row]) +
-                     Dot<kVecIsEvenOdd>(df, mat, row_ofs, even_odd, kInner);
-    } else {
-      out[idx_row] = Dot<kVecIsEvenOdd>(df, mat, row_ofs, even_odd, kInner);
-    }
-  }
-}
-#endif
-
-// even_odd is precomputed for the current thread.
-template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
-HWY_INLINE void MatVecLoop(const ArrayT& mat, const size_t mat_ofs,
-                           const VecT* HWY_RESTRICT vec_aligned,
-                           float* HWY_RESTRICT even_odd,
-                           float* HWY_RESTRICT out) {
-  MatVecAddLoop</*kAdd=*/false, kOuter, kInner>(
-      mat, mat_ofs, vec_aligned, /*add=*/static_cast<VecT*>(nullptr), even_odd,
-      out);
-}
-
-// Simple version without tiling nor threading, but two offsets/outputs.
+// Simple version without tiling nor threading, but two offsets/outputs and
+// always with addition.
 template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT,
           typename AddT>
 HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
@@ -379,8 +320,8 @@ HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
                                     float* HWY_RESTRICT out0,
                                     float* HWY_RESTRICT out1) {
   PROFILER_ZONE("TwoOfsMatVecAddLoop");
-  const hn::ScalableTag<float> df;
   constexpr bool kVecEO = false;
+  const hn::ScalableTag<float> df;
 
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs0 = mat_ofs0 + (idx_row)*kInner;
@@ -1055,33 +996,41 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
   MulByConstAndAdd(c, x, out, size, size);
 }
 
-static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size) {
+static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
+                                 const size_t mask_pos) {
   HWY_DASSERT(size != 0);
+  HWY_DASSERT(mask_pos <= size);
+
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const D d;
 
   const auto vmin = hn::Set(d, hwy::LowestValue<float>());
   auto vmax = vmin;
-  Foreach(d, x, size, vmin,
+  Foreach(d, x, mask_pos, vmin,
           [&vmax](const auto d, const auto value)
               HWY_ATTR { vmax = hn::Max(vmax, value); });
   vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  hn::Transform(d, x, size,
+  hn::Transform(d, x, mask_pos,
                 [&vmax](const auto d, const auto value) HWY_ATTR {
                   return hn::Exp(d, hn::Sub(value, vmax));
                 });
 
   auto sum = hn::Zero(d);
-  Foreach(d, x, size, sum,
+  Foreach(d, x, mask_pos, sum,
           [&sum](const auto d, const auto value)
               HWY_ATTR { sum = hn::Add(sum, value); });
 
   // Normalize to probability distribution
   const float mul = 1.0f / hn::ReduceSum(d, sum);
-  MulByConst(mul, x, size);
+  MulByConst(mul, x, size, mask_pos);
+}
+
+static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,
+                                                const size_t size) {
+  Softmax(x, size, size);
 }
 
 static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
@@ -1106,7 +1055,6 @@ static HWY_INLINE HWY_MAYBE_UNUSED void LogitsSoftCap(const float cap,
                                                       const size_t size) {
   LogitsSoftCap(cap, x, size, size);
 }
-
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED size_t
 SampleArgmax(const float* probabilities, size_t vocab_size) {

@@ -129,14 +129,12 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
   bool ok = true;
   uint64_t total_size = 0;
   auto do_fread = [&](void* var, int layer, const char* name, size_t size) {
-#if 0
     if (layer == -1) {
       fprintf(stderr, "Loading Parameters (size %zu): %s\n", size, name);
     } else {
       fprintf(stderr, "Loading Parameters (layer=%d, size %zu): %s\n", layer,
               size, name);
     }
-#endif
     if constexpr (!kDryRunFread) {
       ok &= 1 == fread(var, size, 1, fptr);
       total_size += size;
@@ -1014,9 +1012,6 @@ void GenerateImpl(const WeightsType<TConfig>& weights,
     return;
   }
   HWY_ASSERT(prompt_size > 0);
-  using DF = hn::ScalableTag<float>;
-  HWY_ASSERT(hn::IsAligned(DF(), prefill_activations.x.data()));
-  HWY_ASSERT(hn::IsAligned(DF(), activations.x.data()));
 
   // pos indexes the KV cache. In the first turn of a chat, pos = 0.
   //
@@ -1377,28 +1372,6 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadCompressedWeights(
   if (!loader.ReadAll(pool)) {
     HWY_ABORT("Failed to load model weights.");
   }
-#if 0
-  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-    auto type = TConfig::kLayerConfig[layer_idx];
-    const size_t idx = static_cast<size_t>(layer_idx);
-    CompressedLayer<TConfig>* layer_weights = c_weights->GetLayer(idx);
-    if (type == LayerAttentionType::kGemma) {
-      static constexpr size_t kHeads = TConfig::kHeads;
-      static constexpr size_t kModelDim = TConfig::kModelDim;
-      static constexpr size_t kQKVDim = TConfig::kQKVDim;
-      std::array<SfpStream, kHeads * kQKVDim * kModelDim> tmp;
-      SfpStream* attn_vec_einsum_w = layer_weights->attn_vec_einsum_w.data();
-      for (size_t i = 0; i < kModelDim; ++i) {
-        for (size_t h = 0; h < kHeads; ++h) {
-          memcpy(&tmp[i * kHeads * kQKVDim + h * kQKVDim],
-                 &attn_vec_einsum_w[h * kQKVDim * kModelDim + i * kQKVDim],
-                 kQKVDim * sizeof(tmp[0]));
-        }
-      }
-      memcpy(attn_vec_einsum_w, tmp.data(), tmp.size() * sizeof(tmp[0]));
-    }
-  }
-#endif
   if (TConfig::kNumTensorScales > 0) {
     size_t scale_pos = 0;
     for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
