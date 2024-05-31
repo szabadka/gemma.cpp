@@ -89,13 +89,6 @@ void RandInit(std::array<float, kLen>& x, std::mt19937& gen) {
 }
 
 template<size_t kLen>
-void ZeroInit(std::array<float, kLen>& x) {
-  for (size_t i = 0; i < kLen; ++i) {
-    x[i] = 0.0f;
-  }
-}
-
-template<size_t kLen>
 void Update(const std::array<float, kLen>& g, float scale,
             std::array<float, kLen>& x) {
   for (size_t i = 0; i < kLen; ++i) {
@@ -150,8 +143,8 @@ void Run(Args& args) {
   };
 
   InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
-  InitWeights(args.model_type, grad_m, InitMode::ZERO_INIT, pool);
-  InitWeights(args.model_type, grad_v, InitMode::ZERO_INIT, pool);
+  ZeroInitWeights(args.model_type, grad_m, pool);
+  ZeroInitWeights(args.model_type, grad_v, pool);
 
   printf("Initial weights:\n");
   LogWeightStats(args.model_type, weights);
@@ -165,7 +158,7 @@ void Run(Args& args) {
   float prev_loss = std::numeric_limits<float>::max();
   for (; steps < 1000000; ++steps) {
     std::mt19937 sgen(42);
-    InitWeights(args.model_type, grad, InitMode::ZERO_INIT, pool);
+    ZeroInitWeights(args.model_type, grad, pool);
     float total_loss = 0.0f;
     size_t num_ok = 0;
     for (size_t i = 0; i < kBatchSize; ++i) {

@@ -80,16 +80,6 @@ struct Layer {
 template <class TConfig>
 using LayerF = Layer<float, TConfig>;
 
-template<typename T, typename TConfig>
-void ZeroInit(Layer<T, TConfig>& layer) {
-  memset(&layer, 0, sizeof(layer));
-}
-
-template<typename T, typename TConfig>
-void Copy(Layer<T, TConfig>& dst, const Layer<T, TConfig>& src) {
-  memcpy(&dst, &src, sizeof(src));
-}
-
 // Array instead of single large allocation for parallel mem init. Split out of
 // Weights so that only these pointers are initialized.
 template <typename T, class TConfig>
@@ -252,7 +242,7 @@ void ZeroInit(Weights<T, TConfig>& w) {
   memset(&w.embedder_input_embedding, 0, sizeof(w.embedder_input_embedding));
   memset(&w.final_norm_scale, 0, sizeof(w.final_norm_scale));
   for (int i = 0; i < TConfig::kLayers; ++i) {
-    ZeroInit(*w.GetLayer(i));
+    memset(w.GetLayer(i), 0, sizeof(*w.GetLayer(i)));
   }
 }
 
@@ -263,7 +253,7 @@ void Copy(Weights<T, TConfig>& dst, const Weights<T, TConfig>& src) {
   memcpy(&dst.final_norm_scale, &src.final_norm_scale,
          sizeof(src.final_norm_scale));
   for (int i = 0; i < TConfig::kLayers; ++i) {
-    Copy(*dst.GetLayer(i), *src.GetLayer(i));
+    memcpy(dst.GetLayer(i), src.GetLayer(i), sizeof(*dst.GetLayer(i)));
   }
 }
 
@@ -283,11 +273,13 @@ class WeightsWrapper {
 
  private:
   hwy::ThreadPool pool_;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> data_;
+  ByteStorageT data_;
   Weights<T, TConfig>* weights_;
 };
 
 ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
+
+void ZeroInitWeights(Model model, ByteStorageT& weights, hwy::ThreadPool& pool);
 
 }  // namespace gcpp
 

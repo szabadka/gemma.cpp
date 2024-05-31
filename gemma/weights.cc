@@ -36,4 +36,32 @@ ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {
   }
 }
 
+namespace {
+template <typename TConfig>
+void ZeroInitWeightsT(ByteStorageT& weights, hwy::ThreadPool& pool) {
+  ZeroInit<float, TConfig>(
+      *reinterpret_cast<Weights<float, TConfig>*>(weights.get()));
+}
+}  // namespace
+
+void ZeroInitWeights(Model model, ByteStorageT& weights,
+                     hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      ZeroInitWeightsT<ConfigGemma2B>(weights, pool);
+      break;
+    case Model::GEMMA_7B:
+      ZeroInitWeightsT<ConfigGemma7B>(weights, pool);
+      break;
+    case Model::GRIFFIN_2B:
+      ZeroInitWeightsT<ConfigGriffin2B>(weights, pool);
+      break;
+    case Model::GEMMA_TINY:
+      ZeroInitWeightsT<ConfigGemmaTiny>(weights, pool);
+      break;
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 }  // namespace gcpp

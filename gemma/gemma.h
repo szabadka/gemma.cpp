@@ -142,7 +142,7 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           hwy::ThreadPool& pool, int verbosity);
 
 
-enum class InitMode { RAND_INIT, ZERO_INIT };
+enum class InitMode { RAND_INIT, };
 
 
 void LogWeightStats(Model model, const ByteStorageT& weights);

@@ -52,13 +52,6 @@ namespace HWY_NAMESPACE {
 
 namespace hn = hwy::HWY_NAMESPACE;
 
-template<size_t kLen>
-void ZeroInit(std::array<float, kLen>& x) {
-  for (size_t i = 0; i < kLen; ++i) {
-    x[i] = 0.0f;
-  }
-}
-
 template<typename T, size_t kLen>
 void RandInit(std::array<T, kLen>& x, T stddev, std::mt19937& gen) {
   std::normal_distribution<T> dist(0.0, stddev);

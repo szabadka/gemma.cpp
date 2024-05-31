@@ -1506,8 +1506,6 @@ class WeightInitializer {
       for (size_t i = 0; i < N; ++i) {
         tensor[i] = dist_(*gen_);
       }
-    } else if (mode_ == InitMode::ZERO_INIT) {
-      memset(tensor.data(), 0, sizeof(tensor));
     }
   }
  private:
