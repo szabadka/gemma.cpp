@@ -141,15 +141,7 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);
 
-
-enum class InitMode { RAND_INIT, };
-
-
 void LogWeightStats(Model model, const ByteStorageT& weights);
-
-void InitWeights(Model model, ByteStorageT& weights,
-                 InitMode init_mode, hwy::ThreadPool& pool,
-                 std::mt19937* gen = nullptr);
 
 void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
                    ByteStorageT& weights, hwy::ThreadPool& pool);

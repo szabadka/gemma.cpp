@@ -1495,56 +1495,6 @@ void CompressWeightsT(gcpp::Model model, const Path& weights,
 }
 
 
-class WeightInitializer {
- public:
-  WeightInitializer(InitMode mode, std::mt19937* gen)
-      : mode_(mode), dist_(0.0f, 1.0f), gen_(gen) {}
-
-  template <size_t N>
-  void operator()(const char* name, std::array<float, N>& tensor) {
-    if (mode_ == InitMode::RAND_INIT) {
-      for (size_t i = 0; i < N; ++i) {
-        tensor[i] = dist_(*gen_);
-      }
-    }
-  }
- private:
-  InitMode mode_;
-  std::normal_distribution<float> dist_;
-  std::mt19937* gen_;
-};
-
-template <typename TConfig>
-void InitWeights(InitMode mode, ByteStorageT& weights_u8,
-                 std::mt19937* gen) {
-  auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-  // TODO(szabadka) Use the same weight initialization method as in the python
-  // version.
-  // TODO(szabadka) Implement multi-threaded initialization.
-  WeightInitializer init(mode, gen);
-  ForEachTensor1<float, TConfig>(init, weights);
-}
-
-void InitWeightsT(gcpp::Model model, ByteStorageT& weights,
-                  InitMode mode, std::mt19937* gen) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      InitWeights<ConfigGemma2B>(mode, weights, gen);
-      break;
-    case Model::GEMMA_7B:
-      InitWeights<ConfigGemma7B>(mode, weights, gen);
-      break;
-    case Model::GRIFFIN_2B:
-      InitWeights<ConfigGriffin2B>(mode, weights, gen);
-      break;
-    case Model::GEMMA_TINY:
-      InitWeights<ConfigGemmaTiny>(mode, weights, gen);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 class WeightUpdater {
  public:
   explicit WeightUpdater(float lr) : lr_(lr) {}
@@ -1600,7 +1550,6 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 
 HWY_EXPORT(LogWeightStatsT);
-HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(UpdateWeightsT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
@@ -1800,11 +1749,6 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
 
 void LogWeightStats(Model model, const ByteStorageT& weights) {
   return HWY_DYNAMIC_DISPATCH(LogWeightStatsT)(model, weights);
-}
-
-void InitWeights(Model model, ByteStorageT& weights,
-                 InitMode init_mode, hwy::ThreadPool& pool, std::mt19937* gen) {
-  return HWY_DYNAMIC_DISPATCH(InitWeightsT)(model, weights, init_mode, gen);
 }
 
 void UpdateWeights(Model model, const ByteStorageT& grad, float scale,

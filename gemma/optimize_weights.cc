@@ -21,6 +21,7 @@
 #include "gemma/backward.h"
 #include "gemma/forward.h"
 #include "gemma/gemma.h"
+#include "gemma/optimizer.h"
 #include "gemma/sampler.h"
 #include "gemma/weights.h"
 #include "util/args.h"
@@ -80,22 +81,6 @@ void ShowHelp(gcpp::Args& args) {
   std::cerr << "\n";
 }
 
-template<size_t kLen>
-void RandInit(std::array<float, kLen>& x, std::mt19937& gen) {
-  std::normal_distribution<float> dist(0.0f, 1.0f);
-  for (size_t i = 0; i < kLen; ++i) {
-    x[i] = dist(gen);
-  }
-}
-
-template<size_t kLen>
-void Update(const std::array<float, kLen>& g, float scale,
-            std::array<float, kLen>& x) {
-  for (size_t i = 0; i < kLen; ++i) {
-    x[i] += scale * g[i];
-  }
-}
-
 void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
   std::mt19937 gen(42);
@@ -142,7 +127,7 @@ void Run(Args& args) {
     return ok;
   };
 
-  InitWeights(args.model_type, weights, InitMode::RAND_INIT, pool, &gen);
+  RandInitWeights(args.model_type, weights, pool, gen);
   ZeroInitWeights(args.model_type, grad_m, pool);
   ZeroInitWeights(args.model_type, grad_v, pool);
 
