@@ -23,10 +23,8 @@
 #include <vector>
 
 #include "compression/io.h"  // Path
-#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
-#include "gemma/prompt.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"

@@ -23,8 +23,6 @@
 // Must come after foreach_target.h to avoid redefinition errors.
 #include "compression/compress-inl.h"
 #include "gemma/common-inl.h"
-#include "gemma/backward-inl.h"
-#include "gemma/forward-inl.h"
 #include "gemma/ops.h"
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"

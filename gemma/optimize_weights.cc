@@ -18,6 +18,7 @@
 #include <iostream>
 #include <string>
 
+#include "gemma/activations.h"
 #include "gemma/backward.h"
 #include "gemma/forward.h"
 #include "gemma/gemma.h"
