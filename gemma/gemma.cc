@@ -1418,20 +1418,19 @@ void LogVec(const char* name, const float* data, size_t len) {
 
 class WeightLogger {
  public:
-  template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, const std::array<float, kCapacity>* data,
-                  CompressedArray<MatT, kCapacity>* compressed) {
-    LogVec(name, data->data(), kCapacity);
-    total_weights += kCapacity;
+  template <size_t N>
+  void operator()(const char* name, const std::array<float, N>& tensor) {
+    LogVec(name, tensor.data(), N);
+    total_weights += N;
   }
   size_t total_weights = 0;
 };
 
 template <typename TConfig>
 void LogWeightStats(const ByteStorageT& weights_u8) {
-  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+  const auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   WeightLogger logger;
-  ForEachTensor<TConfig>(weights, nullptr, logger);
+  ForEachTensor1<float, TConfig>(logger, weights);
   printf("%-20s  %12zu\n", "Total", logger.total_weights);
 }
 
@@ -1547,15 +1546,14 @@ class WeightInitializer {
   WeightInitializer(InitMode mode, std::mt19937* gen)
       : mode_(mode), dist_(0.0f, 1.0f), gen_(gen) {}
 
-  template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, std::array<float, kCapacity>* data,
-                  CompressedArray<MatT, kCapacity>* compressed) {
+  template <size_t N>
+  void operator()(const char* name, std::array<float, N>& tensor) {
     if (mode_ == InitMode::RAND_INIT) {
-      for (size_t i = 0; i < kCapacity; ++i) {
-        (*data)[i] = dist_(*gen_);
+      for (size_t i = 0; i < N; ++i) {
+        tensor[i] = dist_(*gen_);
       }
     } else if (mode_ == InitMode::ZERO_INIT) {
-      memset(data, 0, sizeof(*data));
+      memset(tensor.data(), 0, sizeof(tensor));
     }
   }
  private:
@@ -1567,12 +1565,12 @@ class WeightInitializer {
 template <typename TConfig>
 void InitWeights(InitMode mode, ByteStorageT& weights_u8,
                  std::mt19937* gen) {
-  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+  auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   // TODO(szabadka) Use the same weight initialization method as in the python
   // version.
   // TODO(szabadka) Implement multi-threaded initialization.
   WeightInitializer init(mode, gen);
-  ForEachTensor<TConfig>(weights, nullptr, init);
+  ForEachTensor1<float, TConfig>(init, weights);
 }
 
 void InitWeightsT(gcpp::Model model, ByteStorageT& weights,
@@ -1595,40 +1593,31 @@ void InitWeightsT(gcpp::Model model, ByteStorageT& weights,
   }
 }
 
-template<size_t kCapacity>
-void UpdateTensor(const std::array<float, kCapacity>& grad, float scale,
+class WeightUpdater {
+ public:
+  explicit WeightUpdater(float lr) : lr_(lr) {}
+
+  template <size_t kCapacity>
+  void operator()(const char* name, const std::array<float, kCapacity>& grad,
                   std::array<float, kCapacity>& weights) {
-  // TODO(szabadka) SIMDify this.
-  for (size_t i = 0; i < kCapacity; ++i) {
-    weights[i] += scale * grad[i];
+    // TODO(szabadka) SIMDify this.
+    for (size_t i = 0; i < kCapacity; ++i) {
+      weights[i] += lr_ * grad[i];
+    }
   }
-}
+
+ private:
+  float lr_;
+};
 
 template <typename TConfig>
 void UpdateWeights(const ByteStorageT& grad_u8, float scale,
                    ByteStorageT& weights_u8, hwy::ThreadPool& pool) {
   const auto& grad =
       *reinterpret_cast<const WeightsF<TConfig>*>(grad_u8.get());
-  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-
-  UpdateTensor(grad.embedder_input_embedding, scale,
-               weights->embedder_input_embedding);
-  UpdateTensor(grad.final_norm_scale, scale, weights->final_norm_scale);
-
-  pool.Run(0, TConfig::kLayers, [&](uint64_t idx, size_t /*thread*/) {
-    const LayerF<TConfig>* gl = grad.GetLayer(idx);
-    LayerF<TConfig>* wl = weights->GetLayer(idx);
-
-#define UPDATE_FUNC(member) UpdateTensor(gl->member, scale, wl->member);
-    // TODO(szabadka) Implement it for Griffin as well.
-    UPDATE_FUNC(pre_ffw_norm_scale);
-    UPDATE_FUNC(gating_einsum_w);
-    UPDATE_FUNC(linear_w);
-    UPDATE_FUNC(qkv_einsum_w);
-    UPDATE_FUNC(attn_vec_einsum_w);
-    UPDATE_FUNC(pre_attention_norm_scale);
-#undef UPDATE_FUNC
-  });
+  auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+  WeightUpdater updater(scale);
+  ForEachTensor2<float, TConfig>(updater, grad, weights);
 }
 
 void UpdateWeightsT(Model model, const ByteStorageT& grad, float scale,
