@@ -483,9 +483,10 @@ struct GemmaImpl : public GemmaInterface {
   hwy::AlignedUniquePtr<Activations<Config, 1>> state;
 };
 
-std::string TokenString(const GemmaTokenizer* tokenizer, int token) {
+template <class TConfig>
+std::string TokenString(GemmaImpl<TConfig>& gemma, int token) {
   std::string token_str;
-  tokenizer->Decode({token}, &token_str);
+  gemma.Tokenizer()->Decode({token}, &token_str);
   return "'" + std::regex_replace(token_str, std::regex("\n"), "\\n") + "'";
 }
 
@@ -1146,10 +1147,11 @@ void GenerateImplT(Model model, const ByteStorageT& weights_u8,
   }
 }
 
-#define TOKEN(token_id) TokenString(tokenizer, token_id).c_str()
+#define TOKEN(token_id) TokenString(gemma, token_id).c_str()
 
-void LogTopK(const GemmaTokenizer* tokenizer, float* logits, float* dist,
-             size_t len, size_t k) {
+template <class TConfig>
+void LogTopK(GemmaImpl<TConfig>& gemma, float* logits, float* dist, size_t len,
+             size_t k) {
   std::vector<std::pair<float, int>> sorted(len);
   for (size_t i = 0; i < len; ++i) {
     sorted[i] = std::make_pair(dist[i], static_cast<int>(i));
@@ -1169,23 +1171,20 @@ void LogTopK(const GemmaTokenizer* tokenizer, float* logits, float* dist,
 }
 
 template <class TConfig>
-float ComputeCrossEntropyImpl(const ByteStorageT& weights_u8,
-                              Activations<TConfig, 1>& activations,
-                              const GemmaTokenizer* tokenizer,
-                              size_t max_tokens,
+float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
                               const std::vector<int>& prompt, KVCache& kv_cache,
                               hwy::ThreadPool& pool, int verbosity) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
+  Activations<TConfig, 1>& activations = *gemma.state.get();
   const WeightsT<TConfig>& weights =
-      *reinterpret_cast<const WeightsT<TConfig>*>(weights_u8.get());
+      *reinterpret_cast<const WeightsT<TConfig>*>(gemma.weights_u8.get());
   std::vector<float> logits(kVocabSize);
   Softmax(activations.logits.data(), kVocabSize);
   float total_entropy = 0.0f;
   for (size_t pos = 0; pos < max_tokens && pos < prompt.size(); ++pos) {
-    if (verbosity >= 4 && tokenizer) {
-      LogTopK(tokenizer, logits.data(), activations.logits.data(),
-              kVocabSize, 10);
+    if (verbosity >= 4) {
+      LogTopK(gemma, logits.data(), activations.logits.data(), kVocabSize, 10);
     }
     const int token = prompt[pos];
     const float prob = activations.logits[token];
@@ -1193,9 +1192,7 @@ float ComputeCrossEntropyImpl(const ByteStorageT& weights_u8,
       printf("pos %4zu token %6d = %-12s  %.10e  %14.10f bits\n", pos, token,
              TOKEN(token), prob, -std::log(prob) / std::log(2.0));
     }
-    if (pos > 0) {
-      total_entropy -= std::max(std::log(prob), -64.0f);
-    }
+    total_entropy -= std::max(std::log(prob), -64.0f);
     if (verbosity >= 2 && pos % 100 == 99) {
       printf("Processed %zu tokens, cross-entropy per token: %f\n", pos + 1,
              total_entropy / std::log(2.0) / (pos + 1));
@@ -1211,17 +1208,6 @@ float ComputeCrossEntropyImpl(const ByteStorageT& weights_u8,
     Softmax(activations.logits.data(), kVocabSize);
   }
   return total_entropy / std::log(2.0);
-}
-
-template <class TConfig>
-float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
-                              const std::vector<int>& prompt, KVCache& kv_cache,
-                              hwy::ThreadPool& pool, int verbosity) {
-  return ComputeCrossEntropyImpl<TConfig>(gemma.weights_u8,
-                                          *gemma.state.get(),
-                                          gemma.Tokenizer(),
-                                          max_tokens, prompt, kv_cache, pool,
-                                          verbosity);
 }
 
 #undef TOKEN
