@@ -48,6 +48,7 @@
 
 namespace gcpp {
 
+static constexpr size_t kSeqLen = GEMMA_MAX_SEQLEN;
 static constexpr size_t kTopK = GEMMA_TOPK;
 static constexpr size_t kMaxThreads = GEMMA_MAX_THREADS;
 
@@ -78,7 +79,7 @@ constexpr size_t NumLayersOfTypeBefore(
 }
 
 struct ConfigGemma7B {
-  static constexpr int kSeqLen = GEMMA_MAX_SEQLEN;
+  static constexpr int kSeqLen = gcpp::kSeqLen;
   static constexpr int kVocabSize = 256000;
   static constexpr std::array<LayerAttentionType, 28> kLayerConfig =
       FixedLayerConfig<28>(LayerAttentionType::kGemma);
@@ -110,7 +111,7 @@ struct ConfigGemma7B {
 };
 
 struct ConfigGemma2B {
-  static constexpr int kSeqLen = GEMMA_MAX_SEQLEN;
+  static constexpr int kSeqLen = gcpp::kSeqLen;
   static constexpr int kVocabSize = 256000;
   static constexpr std::array<LayerAttentionType, 18> kLayerConfig =
       FixedLayerConfig<18>(LayerAttentionType::kGemma);
