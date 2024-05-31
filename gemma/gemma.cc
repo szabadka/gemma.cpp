@@ -351,8 +351,7 @@ struct Activations {
       att_post1;  // attention output after linear transformation, per head
   std::array<float, kBatchSize * kModelDim>
       att_post2;  // accumulation of attention outputs over heads
-  //std::array<hwy::bfloat16_t, kBatchSize * kModelDim> bf_pre_ffw_rms_out;
-  std::array<float, kBatchSize * kModelDim> bf_pre_ffw_rms_out;
+  std::array<hwy::bfloat16_t, kBatchSize * kModelDim> bf_pre_ffw_rms_out;
   std::array<float, kBatchSize * TConfig::kFFHiddenDim * 2> ffw_hidden;
   // bf_ version can't be used until GeluMulToBF16 issue in FFW() is resolved.
   // std::array<hwy::bfloat16_t, kBatchSize * 2 * TConfig::kFFHiddenDim>
@@ -798,8 +797,7 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
   for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
     const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
     PROFILER_ZONE("Gen.FFW.GatedGELU");
-    //const hwy::bfloat16_t* HWY_RESTRICT vec =
-    const float* HWY_RESTRICT vec =
+    const hwy::bfloat16_t* HWY_RESTRICT vec =
         activations.bf_pre_ffw_rms_out.data() + batch_idx * kModelDim;
     float* HWY_RESTRICT out = activations.ffw_hidden.data() + hidden_offset;
     float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
