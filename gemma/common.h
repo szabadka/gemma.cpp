@@ -18,7 +18,7 @@
 
 namespace gcpp {
 
-using WeightStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
+using ByteStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
 
 // Model variants: see configs.h for details.
 enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };

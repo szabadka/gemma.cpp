@@ -104,13 +104,13 @@ void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
   std::mt19937 gen(42);
 
-  WeightStorageT weights = AllocateWeights(args.model_type, pool);
-  WeightStorageT grad = AllocateWeights(args.model_type, pool);
-  WeightStorageT grad_m = AllocateWeights(args.model_type, pool);
-  WeightStorageT grad_v = AllocateWeights(args.model_type, pool);
-  WeightStorageT forward = AllocateForwardPass(args.model_type);
-  WeightStorageT backward = AllocateForwardPass(args.model_type);
-  WeightStorageT inference = AllocateInferenceState(args.model_type);
+  ByteStorageT weights = AllocateWeights(args.model_type, pool);
+  ByteStorageT grad = AllocateWeights(args.model_type, pool);
+  ByteStorageT grad_m = AllocateWeights(args.model_type, pool);
+  ByteStorageT grad_v = AllocateWeights(args.model_type, pool);
+  ByteStorageT forward = AllocateForwardPass(args.model_type);
+  ByteStorageT backward = AllocateForwardPass(args.model_type);
+  ByteStorageT inference = AllocateInferenceState(args.model_type);
   auto kv_cache = CreateKVCache(args.model_type);
   size_t max_tokens = 32;
   size_t max_generated_tokens = 16;

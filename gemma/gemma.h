@@ -100,7 +100,7 @@ struct Gemma {
         hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after the GemmaInterface dtor is defined.
   const GemmaTokenizer* Tokenizer() const;
-  const WeightStorageT& Weights() const;
+  const ByteStorageT& Weights() const;
   std::unique_ptr<GemmaInterface> impl_;
 };
 
@@ -123,8 +123,8 @@ void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
                    TimingInfo& timing_info,
                    LayersOutputT* layers_output = nullptr);
 
-void GenerateGemma(Model model, const WeightStorageT& weights,
-                   WeightStorageT& inference_state,
+void GenerateGemma(Model model, const ByteStorageT& weights,
+                   ByteStorageT& inference_state,
                    RuntimeConfig runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
@@ -140,33 +140,33 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);
 
-WeightStorageT LoadWeights(const Path& weights, Model model_type,
+ByteStorageT LoadWeights(const Path& weights, Model model_type,
                            hwy::ThreadPool& pool);
 
 enum class InitMode { RAND_INIT, ZERO_INIT };
 
-WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
-WeightStorageT AllocateInferenceState(Model model);
-WeightStorageT AllocateForwardPass(Model model);
+ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
+ByteStorageT AllocateInferenceState(Model model);
+ByteStorageT AllocateForwardPass(Model model);
 
-void LogWeightStats(Model model, const WeightStorageT& weights);
+void LogWeightStats(Model model, const ByteStorageT& weights);
 
-void InitWeights(Model model, WeightStorageT& weights,
+void InitWeights(Model model, ByteStorageT& weights,
                  InitMode init_mode, hwy::ThreadPool& pool,
                  std::mt19937* gen = nullptr);
 
-void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
-                   WeightStorageT& weights, hwy::ThreadPool& pool);
+void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
+                   ByteStorageT& weights, hwy::ThreadPool& pool);
 
 float CrossEntropyLossForwardStep(
     const std::vector<int>& prompt, size_t context_size, const Model& model,
-    const WeightStorageT& weights, WeightStorageT& forward,
+    const ByteStorageT& weights, ByteStorageT& forward,
     hwy::ThreadPool& pool);
 
 void CrossEntropyLossBackwardStep(
     const Prompt& prompt, const Model& model,
-    const WeightStorageT& weights, const WeightStorageT& forward,
-    WeightStorageT& grad, WeightStorageT& backward, hwy::ThreadPool& pool);
+    const ByteStorageT& weights, const ByteStorageT& forward,
+    ByteStorageT& grad, ByteStorageT& backward, hwy::ThreadPool& pool);
 
 }  // namespace gcpp
 

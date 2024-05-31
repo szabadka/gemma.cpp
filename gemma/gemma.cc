@@ -94,7 +94,7 @@ float ScaleWeights(float* data, size_t len) {
 }
 
 template <typename T, typename TConfig>
-WeightStorageT AllocateForwardPass() {
+ByteStorageT AllocateForwardPass() {
   using TForward = ForwardPass<T, TConfig>;
   hwy::AlignedFreeUniquePtr<uint8_t[]> forward_u8 =
       hwy::AllocateAligned<uint8_t>(sizeof(TForward));
@@ -112,7 +112,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
               checkpoint.path.c_str());
   }
 
-  WeightStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
+  ByteStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
   auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
 
   size_t scale_pos = 0;
@@ -371,7 +371,7 @@ struct InferenceState {
   Activations<TConfig, kPrefillBatchSize> prefill;
   HWY_ALIGN Activations<TConfig, 1> state;
 
-  static WeightStorageT Allocate() {
+  static ByteStorageT Allocate() {
     return hwy::AllocateAligned<uint8_t>(sizeof(InferenceState<TConfig>));
   }
 };
@@ -382,7 +382,7 @@ struct GemmaInterface {
   virtual ~GemmaInterface() = default;
 
   virtual const GemmaTokenizer* Tokenizer() const = 0;
-  virtual const WeightStorageT& Weights() const = 0;
+  virtual const ByteStorageT& Weights() const = 0;
 
   virtual void Generate(const RuntimeConfig& runtime_config,
                         const std::vector<int>& prompt, size_t start_pos,
@@ -477,7 +477,7 @@ struct GemmaImpl : public GemmaInterface {
   }
 
   const GemmaTokenizer* Tokenizer() const override { return &tokenizer; }
-  const WeightStorageT& Weights() const override { return weights_u8; }
+  const ByteStorageT& Weights() const override { return weights_u8; }
 
   void Generate(const RuntimeConfig& runtime_config,
                 const std::vector<int>& prompt, size_t start_pos,
@@ -1123,8 +1123,8 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma,
 }
 
 template <class TConfig>
-void GenerateImpl(const WeightStorageT& weights_u8,
-                  WeightStorageT& inference_state_u8,
+void GenerateImpl(const ByteStorageT& weights_u8,
+                  ByteStorageT& inference_state_u8,
                   const RuntimeConfig& runtime_config,
                   const std::vector<int>& prompt, size_t pos,
                   KVCache& kv_cache, hwy::ThreadPool& pool,
@@ -1138,8 +1138,8 @@ void GenerateImpl(const WeightStorageT& weights_u8,
       prompt, pos, kv_cache, pool, timing_info, layers_output);
 }
 
-void GenerateImplT(Model model, const WeightStorageT& weights_u8,
-                   WeightStorageT& inference_state_u8,
+void GenerateImplT(Model model, const ByteStorageT& weights_u8,
+                   ByteStorageT& inference_state_u8,
                    const RuntimeConfig& runtime_config,
                    const std::vector<int>& prompt, size_t pos,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
@@ -1183,7 +1183,7 @@ void LogTopK(const GemmaTokenizer* tokenizer, float* logits, float* dist,
 }
 
 template <class TConfig>
-float ComputeCrossEntropyImpl(const WeightStorageT& weights_u8,
+float ComputeCrossEntropyImpl(const ByteStorageT& weights_u8,
                               Activations<TConfig, 1>& activations,
                               const GemmaTokenizer* tokenizer,
                               size_t max_tokens,
@@ -1452,7 +1452,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeightsT(gcpp::Model model,
   }
 }
 
-WeightStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
+ByteStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
       return AllocateWeights<float, ConfigGemma2B>(pool);
@@ -1467,7 +1467,7 @@ WeightStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
   }
 }
 
-WeightStorageT AllocateInferenceStateT(Model model) {
+ByteStorageT AllocateInferenceStateT(Model model) {
   switch (model) {
     case Model::GEMMA_2B:
       return InferenceState<ConfigGemma2B>::Allocate();
@@ -1478,7 +1478,7 @@ WeightStorageT AllocateInferenceStateT(Model model) {
   }
 }
 
-WeightStorageT AllocateForwardPassT(gcpp::Model model) {
+ByteStorageT AllocateForwardPassT(gcpp::Model model) {
   switch (model) {
     case Model::GEMMA_2B:
       return AllocateForwardPass<float, ConfigGemma2B>();
@@ -1515,14 +1515,14 @@ class WeightLogger {
 };
 
 template <typename TConfig>
-void LogWeightStats(const WeightStorageT& weights_u8) {
+void LogWeightStats(const ByteStorageT& weights_u8) {
   auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   WeightLogger logger;
   ForEachTensor<TConfig>(weights, nullptr, logger);
   printf("%-20s  %12zu\n", "Total", logger.total_weights);
 }
 
-void LogWeightStatsT(gcpp::Model model, const WeightStorageT& weights) {
+void LogWeightStatsT(gcpp::Model model, const ByteStorageT& weights) {
   switch (model) {
     case Model::GEMMA_2B:
       return LogWeightStats<ConfigGemma2B>(weights);
@@ -1597,11 +1597,11 @@ void DecompressWeights(const Path& weights_path,
   }
 
   // Allocate weights.
-  WeightStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
+  ByteStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
   auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
 
   // Get weights, compress, and store.
-  const WeightStorageT c_weights_u8 =
+  const ByteStorageT c_weights_u8 =
       LoadCompressedWeights<TConfig>(compressed_weights_path, pool);
   CompressedWeights<TConfig>* c_weights =
       reinterpret_cast<CompressedWeights<TConfig>*>(c_weights_u8.get());
@@ -1652,7 +1652,7 @@ class WeightInitializer {
 };
 
 template <typename TConfig>
-void InitWeights(InitMode mode, WeightStorageT& weights_u8,
+void InitWeights(InitMode mode, ByteStorageT& weights_u8,
                  std::mt19937* gen) {
   auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   // TODO(szabadka) Use the same weight initialization method as in the python
@@ -1662,7 +1662,7 @@ void InitWeights(InitMode mode, WeightStorageT& weights_u8,
   ForEachTensor<TConfig>(weights, nullptr, init);
 }
 
-void InitWeightsT(gcpp::Model model, WeightStorageT& weights,
+void InitWeightsT(gcpp::Model model, ByteStorageT& weights,
                   InitMode mode, std::mt19937* gen) {
   switch (model) {
     case Model::GEMMA_2B:
@@ -1692,8 +1692,8 @@ void UpdateTensor(const std::array<float, kCapacity>& grad, float scale,
 }
 
 template <typename TConfig>
-void UpdateWeights(const WeightStorageT& grad_u8, float scale,
-                   WeightStorageT& weights_u8, hwy::ThreadPool& pool) {
+void UpdateWeights(const ByteStorageT& grad_u8, float scale,
+                   ByteStorageT& weights_u8, hwy::ThreadPool& pool) {
   const auto& grad =
       *reinterpret_cast<const WeightsF<TConfig>*>(grad_u8.get());
   auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
@@ -1718,8 +1718,8 @@ void UpdateWeights(const WeightStorageT& grad_u8, float scale,
   });
 }
 
-void UpdateWeightsT(Model model, const WeightStorageT& grad, float scale,
-                   WeightStorageT& weights, hwy::ThreadPool& pool) {
+void UpdateWeightsT(Model model, const ByteStorageT& grad, float scale,
+                   ByteStorageT& weights, hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
       UpdateWeights<ConfigGemma2B>(grad, scale, weights, pool);
@@ -1741,8 +1741,8 @@ void UpdateWeightsT(Model model, const WeightStorageT& grad, float scale,
 template <typename TConfig>
 float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
                                   size_t context_size,
-                                  const WeightStorageT& weights_u8,
-                                  WeightStorageT& forward_u8,
+                                  const ByteStorageT& weights_u8,
+                                  ByteStorageT& forward_u8,
                                   hwy::ThreadPool& pool) {
   const auto& weights =
       *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
@@ -1754,10 +1754,10 @@ float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
 
 template <typename TConfig>
 void CrossEntropyLossBackwardStep(const Prompt& prompt,
-                                  const WeightStorageT& weights_u8,
-                                  const WeightStorageT& forward_u8,
-                                  WeightStorageT& grad_u8,
-                                  WeightStorageT& backward_u8,
+                                  const ByteStorageT& weights_u8,
+                                  const ByteStorageT& forward_u8,
+                                  ByteStorageT& grad_u8,
+                                  ByteStorageT& backward_u8,
                                   hwy::ThreadPool& pool) {
   using TWeights = WeightsF<TConfig>;
   const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
@@ -1770,8 +1770,8 @@ void CrossEntropyLossBackwardStep(const Prompt& prompt,
 
 float CrossEntropyLossForwardStepT(const std::vector<int> prompt,
                                    size_t context_size, Model model,
-                                   const WeightStorageT& weights,
-                                   WeightStorageT& forward,
+                                   const ByteStorageT& weights,
+                                   ByteStorageT& forward,
                                    hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
@@ -1787,10 +1787,10 @@ float CrossEntropyLossForwardStepT(const std::vector<int> prompt,
 
 void CrossEntropyLossBackwardStepT(const Prompt& prompt,
                                    Model model,
-                                   const WeightStorageT& weights,
-                                   const WeightStorageT& forward,
-                                   WeightStorageT& grad,
-                                   WeightStorageT& backward,
+                                   const ByteStorageT& weights,
+                                   const ByteStorageT& forward,
+                                   ByteStorageT& grad,
+                                   ByteStorageT& backward,
                                    hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
@@ -1959,7 +1959,7 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 
 const GemmaTokenizer* Gemma::Tokenizer() const { return impl_->Tokenizer(); }
-const WeightStorageT& Gemma::Weights() const { return impl_->Weights(); }
+const ByteStorageT& Gemma::Weights() const { return impl_->Weights(); }
 
 void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
@@ -1972,8 +1972,8 @@ void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
 
-void GenerateGemma(Model model, const WeightStorageT& weights,
-                   WeightStorageT& inference_state,
+void GenerateGemma(Model model, const ByteStorageT& weights,
+                   ByteStorageT& inference_state,
                    RuntimeConfig runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
@@ -2005,41 +2005,41 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
   return result;
 }
 
-WeightStorageT LoadWeights(const Path& weights, Model model_type,
+ByteStorageT LoadWeights(const Path& weights, Model model_type,
                            hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(LoadWeightsT)(model_type, weights, pool);
 }
 
-WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {
+ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(AllocateWeightsT)(model, pool);
 }
 
-WeightStorageT AllocateInferenceState(Model model) {
+ByteStorageT AllocateInferenceState(Model model) {
   return HWY_DYNAMIC_DISPATCH(AllocateInferenceStateT)(model);
 }
 
-WeightStorageT AllocateForwardPass(Model model) {
+ByteStorageT AllocateForwardPass(Model model) {
   return HWY_DYNAMIC_DISPATCH(AllocateForwardPassT)(model);
 }
 
-void LogWeightStats(Model model, const WeightStorageT& weights) {
+void LogWeightStats(Model model, const ByteStorageT& weights) {
   return HWY_DYNAMIC_DISPATCH(LogWeightStatsT)(model, weights);
 }
 
-void InitWeights(Model model, WeightStorageT& weights,
+void InitWeights(Model model, ByteStorageT& weights,
                  InitMode init_mode, hwy::ThreadPool& pool, std::mt19937* gen) {
   return HWY_DYNAMIC_DISPATCH(InitWeightsT)(model, weights, init_mode, gen);
 }
 
-void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
-                   WeightStorageT& weights, hwy::ThreadPool& pool) {
+void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
+                   ByteStorageT& weights, hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(UpdateWeightsT)(model, grad, scale, weights,
                                               pool);
 }
 
 float CrossEntropyLossForwardStep(
     const std::vector<int>& prompt, size_t context_size, const Model& model,
-    const WeightStorageT& weights, WeightStorageT& forward,
+    const ByteStorageT& weights, ByteStorageT& forward,
     hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(CrossEntropyLossForwardStepT)(
       prompt, context_size, model, weights, forward, pool);
@@ -2047,8 +2047,8 @@ float CrossEntropyLossForwardStep(
 
 void CrossEntropyLossBackwardStep(
     const Prompt& prompt, const Model& model,
-    const WeightStorageT& weights, const WeightStorageT& forward,
-    WeightStorageT& grad, WeightStorageT& backward, hwy::ThreadPool& pool) {
+    const ByteStorageT& weights, const ByteStorageT& forward,
+    ByteStorageT& grad, ByteStorageT& backward, hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(CrossEntropyLossBackwardStepT)(
       prompt, model, weights, forward, grad, backward, pool);
 }
