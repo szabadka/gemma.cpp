@@ -71,11 +71,11 @@ void ApplyRMSNorm(const WT* HWY_RESTRICT weights, const XT* HWY_RESTRICT x,
   }
 }
 
-float CrossEntropyLoss(const float* HWY_RESTRICT probs,
-                       const std::vector<int>& prompt,
-                       size_t context_size,
-                       size_t vocab_size,
-                       hwy::ThreadPool& pool) {
+static HWY_NOINLINE float CrossEntropyLoss(const float* HWY_RESTRICT probs,
+                                           const std::vector<int>& prompt,
+                                           size_t context_size,
+                                           size_t vocab_size,
+                                           hwy::ThreadPool& pool) {
   float loss = 0.0f;
   for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
     if (pos + 1 < context_size) {
@@ -229,7 +229,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
 
 template <typename TConfig, template<typename> typename WeightsT,
           template<typename> typename LayerT>
-float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
+float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
                                   size_t context_size,
                                   const WeightsT<TConfig>& weights,
                                   ForwardPass<float, TConfig>& forward,

@@ -49,11 +49,13 @@ set(SOURCES
   gemma/configs.h
   gemma/activations.cc
   gemma/common_scalar.cc
+  gemma/forward.cc
+  gemma/forward.h
   gemma/gemma.cc
   gemma/gemma.h
   gemma/ops.h
-  gemma/weights.h
   gemma/weights.cc
+  gemma/weights.h
   util/app.h
   util/args.h
   )

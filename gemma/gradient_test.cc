@@ -319,14 +319,14 @@ void TestEndToEnd() {
     float loss0 = CrossEntropyLossForwardPass(
         prompt, weights.get(), forward0.get());
 
-    float loss1 = CrossEntropyLossForwardStep<TestConfig, WeightsF, LayerF>(
+    float loss1 = CrossEntropyLossForwardPass<TestConfig, WeightsF, LayerF>(
         prompt.tokens, prompt.context_size, weights.get(), forward1.get(),
         pool);
 
     EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 1e-5);
 
     grad.clear();
-    CrossEntropyLossBackwardStep(
+    CrossEntropyLossBackwardPass(
         prompt, weights.get(), forward1.get(), grad.get(), backward.get(),
         pool);
 

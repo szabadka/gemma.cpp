@@ -18,6 +18,7 @@
 #include <iostream>
 #include <string>
 
+#include "gemma/forward.h"
 #include "gemma/gemma.h"
 #include "gemma/sampler.h"
 #include "gemma/weights.h"
@@ -168,10 +169,9 @@ void Run(Args& args) {
     size_t num_ok = 0;
     for (size_t i = 0; i < kBatchSize; ++i) {
       Prompt prompt = training_task.Sample(sgen);
-      total_loss += CrossEntropyLossForwardStep(
-          prompt.tokens, prompt.context_size, args.model_type, weights, forward,
-          pool);
-      CrossEntropyLossBackwardStep(
+      total_loss += CrossEntropyLossForwardPass(
+          args.model_type, prompt, weights, forward, pool);
+      CrossEntropyLossBackwardPass(
           prompt, args.model_type, weights, forward, grad, backward, pool);
       num_ok += verify(prompt) ? 1 : 0;
     }

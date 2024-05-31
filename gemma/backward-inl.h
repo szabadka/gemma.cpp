@@ -357,7 +357,7 @@ static HWY_NOINLINE void CrossEntropyLossGrad(
 }
 
 template <typename TConfig>
-void CrossEntropyLossBackwardStep(const Prompt& prompt,
+void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   const Weights<float, TConfig>& weights,
                                   const ForwardPass<float, TConfig>& forward,
                                   Weights<float, TConfig>& grad,

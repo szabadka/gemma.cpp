@@ -1595,21 +1595,7 @@ void UpdateWeightsT(Model model, const ByteStorageT& grad, float scale,
 }
 
 template <typename TConfig>
-float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
-                                  size_t context_size,
-                                  const ByteStorageT& weights_u8,
-                                  ByteStorageT& forward_u8,
-                                  hwy::ThreadPool& pool) {
-  const auto& weights =
-      *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-  auto& forward =
-      *reinterpret_cast<ForwardPass<float, TConfig>*>(forward_u8.get());
-  return CrossEntropyLossForwardStep<TConfig, WeightsF, LayerF>(
-      prompt, context_size, weights, forward, pool);
-}
-
-template <typename TConfig>
-void CrossEntropyLossBackwardStep(const Prompt& prompt,
+void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   const ByteStorageT& weights_u8,
                                   const ByteStorageT& forward_u8,
                                   ByteStorageT& grad_u8,
@@ -1621,27 +1607,10 @@ void CrossEntropyLossBackwardStep(const Prompt& prompt,
   using TAct = ForwardPass<float, TConfig>;
   const auto& forward = *reinterpret_cast<const TAct*>(forward_u8.get());
   auto& backward = *reinterpret_cast<TAct*>(backward_u8.get());
-  CrossEntropyLossBackwardStep(prompt, weights, forward, grad, backward, pool);
+  CrossEntropyLossBackwardPass(prompt, weights, forward, grad, backward, pool);
 }
 
-float CrossEntropyLossForwardStepT(const std::vector<int> prompt,
-                                   size_t context_size, Model model,
-                                   const ByteStorageT& weights,
-                                   ByteStorageT& forward,
-                                   hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      return CrossEntropyLossForwardStep<ConfigGemma2B>(
-          prompt, context_size, weights, forward, pool);
-    case Model::GEMMA_TINY:
-      return CrossEntropyLossForwardStep<ConfigGemmaTiny>(
-          prompt, context_size, weights, forward, pool);
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
-void CrossEntropyLossBackwardStepT(const Prompt& prompt,
+void CrossEntropyLossBackwardPassT(const Prompt& prompt,
                                    Model model,
                                    const ByteStorageT& weights,
                                    const ByteStorageT& forward,
@@ -1650,11 +1619,11 @@ void CrossEntropyLossBackwardStepT(const Prompt& prompt,
                                    hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
-      CrossEntropyLossBackwardStep<ConfigGemma2B>(
+      CrossEntropyLossBackwardPass<ConfigGemma2B>(
           prompt, weights, forward, grad, backward, pool);
       break;
     case Model::GEMMA_TINY:
-      CrossEntropyLossBackwardStep<ConfigGemmaTiny>(
+      CrossEntropyLossBackwardPass<ConfigGemmaTiny>(
           prompt, weights, forward, grad, backward, pool);
       break;
     default:
@@ -1672,8 +1641,7 @@ namespace gcpp {
 HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(UpdateWeightsT);
-HWY_EXPORT(CrossEntropyLossForwardStepT);
-HWY_EXPORT(CrossEntropyLossBackwardStepT);
+HWY_EXPORT(CrossEntropyLossBackwardPassT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
@@ -1885,19 +1853,11 @@ void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
                                               pool);
 }
 
-float CrossEntropyLossForwardStep(
-    const std::vector<int>& prompt, size_t context_size, const Model& model,
-    const ByteStorageT& weights, ByteStorageT& forward,
-    hwy::ThreadPool& pool) {
-  return HWY_DYNAMIC_DISPATCH(CrossEntropyLossForwardStepT)(
-      prompt, context_size, model, weights, forward, pool);
-}
-
-void CrossEntropyLossBackwardStep(
+void CrossEntropyLossBackwardPass(
     const Prompt& prompt, const Model& model,
     const ByteStorageT& weights, const ByteStorageT& forward,
     ByteStorageT& grad, ByteStorageT& backward, hwy::ThreadPool& pool) {
-  return HWY_DYNAMIC_DISPATCH(CrossEntropyLossBackwardStepT)(
+  return HWY_DYNAMIC_DISPATCH(CrossEntropyLossBackwardPassT)(
       prompt, model, weights, forward, grad, backward, pool);
 }
 

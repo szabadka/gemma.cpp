@@ -154,12 +154,7 @@ void InitWeights(Model model, ByteStorageT& weights,
 void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
                    ByteStorageT& weights, hwy::ThreadPool& pool);
 
-float CrossEntropyLossForwardStep(
-    const std::vector<int>& prompt, size_t context_size, const Model& model,
-    const ByteStorageT& weights, ByteStorageT& forward,
-    hwy::ThreadPool& pool);
-
-void CrossEntropyLossBackwardStep(
+void CrossEntropyLossBackwardPass(
     const Prompt& prompt, const Model& model,
     const ByteStorageT& weights, const ByteStorageT& forward,
     ByteStorageT& grad, ByteStorageT& backward, hwy::ThreadPool& pool);
