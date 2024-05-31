@@ -130,6 +130,11 @@ void GenerateGemma(Model model, const ByteStorageT& weights,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
                    TimingInfo& timing_info);
 
+ByteStorageT LoadWeights(const Path& weights, Model model,
+                         hwy::ThreadPool& pool);
+
+ByteStorageT AllocateInferenceState(Model model);
+
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool);
 
@@ -140,12 +145,9 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);
 
-ByteStorageT LoadWeights(const Path& weights, Model model_type,
-                           hwy::ThreadPool& pool);
 
 enum class InitMode { RAND_INIT, ZERO_INIT };
 
-ByteStorageT AllocateInferenceState(Model model);
 
 void LogWeightStats(Model model, const ByteStorageT& weights);
 

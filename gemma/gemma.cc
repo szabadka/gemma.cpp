@@ -1402,17 +1402,6 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeightsT(gcpp::Model model,
   }
 }
 
-ByteStorageT AllocateInferenceStateT(Model model) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      return InferenceState<ConfigGemma2B>::Allocate();
-    case Model::GEMMA_TINY:
-      return InferenceState<ConfigGemmaTiny>::Allocate();
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 void LogVec(const char* name, const float* data, size_t len) {
   float minval = std::numeric_limits<float>::max();
   float maxval = std::numeric_limits<float>::min();
@@ -1737,7 +1726,6 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 
-HWY_EXPORT(AllocateInferenceStateT);
 HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(UpdateWeightsT);
@@ -1905,6 +1893,26 @@ void GenerateGemma(Model model, const ByteStorageT& weights,
       kv_cache, pool, timing_info, /*layers_output=*/nullptr);
 }
 
+ByteStorageT LoadWeights(const Path& weights, Model model,
+                         hwy::ThreadPool& pool) {
+  return HWY_DYNAMIC_DISPATCH(LoadWeightsT)(model, weights, pool);
+}
+
+ByteStorageT AllocateInferenceState(Model model) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return InferenceState<ConfigGemma2B>::Allocate();
+    case Model::GEMMA_7B:
+      return InferenceState<ConfigGemma7B>::Allocate();
+    case Model::GRIFFIN_2B:
+      return InferenceState<ConfigGriffin2B>::Allocate();
+    case Model::GEMMA_TINY:
+      return InferenceState<ConfigGemmaTiny>::Allocate();
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool) {
   HWY_DYNAMIC_DISPATCH(CompressWeightsT)
@@ -1925,15 +1933,6 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
       max_tokens, prompt, kv_cache, pool, verbosity);
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
   return result;
-}
-
-ByteStorageT LoadWeights(const Path& weights, Model model_type,
-                           hwy::ThreadPool& pool) {
-  return HWY_DYNAMIC_DISPATCH(LoadWeightsT)(model_type, weights, pool);
-}
-
-ByteStorageT AllocateInferenceState(Model model) {
-  return HWY_DYNAMIC_DISPATCH(AllocateInferenceStateT)(model);
 }
 
 void LogWeightStats(Model model, const ByteStorageT& weights) {
