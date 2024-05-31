@@ -1004,8 +1004,8 @@ void RangeChecks(size_t& max_tokens, size_t& max_generated_tokens,
 template <class TConfig>
 void GenerateImpl(const WeightsT<TConfig>& weights,
                   Activations<TConfig, kPrefillBatchSize>& prefill_activations,
-                  Activations<TConfig, 1>& activations, size_t max_tokens,
-                  size_t max_generated_tokens, float temperature,
+                  Activations<TConfig, 1>& activations,
+                  const RuntimeConfig& runtime_config,
                   const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
                   hwy::ThreadPool& pool, TimingInfo& timing_info,
                   LayersOutputT* layers_output) {
@@ -1116,61 +1116,50 @@ void GenerateImpl(const WeightsT<TConfig>& weights,
 }
 
 template <class TConfig>
-void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
-                  size_t max_generated_tokens, float temperature,
+void GenerateImpl(GemmaImpl<TConfig>& gemma,
+                  const RuntimeConfig& runtime_config,
                   const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
-                  hwy::ThreadPool& pool, const StreamFunc& stream_token,
-                  const AcceptFunc& accept_token, std::mt19937& gen,
-                  int verbosity, LayersOutputT* layers_output) {
-  Activations<TConfig, 1>& activations = *gemma.state.get();
-  Activations<TConfig, kPrefillBatchSize>& prefill_activations =
-      *gemma.prefill.get();
+                  hwy::ThreadPool& pool, TimingInfo& timing_info,
+                  LayersOutputT* layers_output) {
   const WeightsT<TConfig>& weights =
       *reinterpret_cast<WeightsT<TConfig>*>(gemma.weights_u8.get());
-  GenerateImpl(weights, prefill_activations, activations, max_tokens,
-               max_generated_tokens, temperature, prompt, pos, kv_cache, pool,
-               stream_token, accept_token, gen, verbosity, layers_output);
+  GenerateImpl(weights, *gemma.prefill.get(), *gemma.state.get(),
+               runtime_config, prompt, pos, kv_cache, pool, timing_info,
+               layers_output);
 }
 
 template <class TConfig>
 void GenerateImpl(const WeightStorageT& weights_u8,
                   WeightStorageT& inference_state_u8,
-                  size_t max_tokens, size_t max_generated_tokens,
-                  float temperature, const std::vector<int>& prompt,
-                  size_t pos, KVCache& kv_cache, hwy::ThreadPool& pool,
-                  const StreamFunc& stream_token,
-                  const AcceptFunc& accept_token, std::mt19937& gen,
-                  int verbosity, LayersOutputT* layers_output) {
+                  const RuntimeConfig& runtime_config,
+                  const std::vector<int>& prompt, size_t pos,
+                  KVCache& kv_cache, hwy::ThreadPool& pool,
+                  TimingInfo& timing_info, LayersOutputT* layers_output) {
   const WeightsT<TConfig>& weights =
       *reinterpret_cast<const WeightsT<TConfig>*>(weights_u8.get());
   InferenceState<TConfig>& inference_state =
       *reinterpret_cast<InferenceState<TConfig>*>(inference_state_u8.get());
   GenerateImpl(weights, inference_state.prefill, inference_state.state,
-               max_tokens, max_generated_tokens, temperature, prompt, pos,
-               kv_cache, pool, stream_token, accept_token, gen, verbosity,
+               runtime_config, prompt, pos, kv_cache, pool, timing_info,
                layers_output);
 }
 
 void GenerateImplT(Model model, const WeightStorageT& weights_u8,
-                  WeightStorageT& inference_state_u8,
-                  size_t max_tokens, size_t max_generated_tokens,
-                  float temperature, const std::vector<int>& prompt,
-                  size_t pos, KVCache& kv_cache, hwy::ThreadPool& pool,
-                  const StreamFunc& stream_token,
-                  const AcceptFunc& accept_token, std::mt19937& gen,
-                  int verbosity, LayersOutputT* layers_output) {
+                   WeightStorageT& inference_state_u8,
+                   const RuntimeConfig& runtime_config,
+                   const std::vector<int>& prompt, size_t pos,
+                   KVCache& kv_cache, hwy::ThreadPool& pool,
+                   TimingInfo& timing_info, LayersOutputT* layers_output) {
   switch (model) {
     case Model::GEMMA_2B:
       GenerateImpl<ConfigGemma2B>(
-          weights_u8, inference_state_u8, max_tokens, max_generated_tokens,
-          temperature, prompt, pos, kv_cache, pool, stream_token, accept_token,
-          gen, verbosity, layers_output);
+          weights_u8, inference_state_u8, runtime_config, prompt, pos, kv_cache,
+          pool, timing_info, layers_output);
       break;
     case Model::GEMMA_TINY:
       GenerateImpl<ConfigGemmaTiny>(
-          weights_u8, inference_state_u8, max_tokens, max_generated_tokens,
-          temperature, prompt, pos, kv_cache, pool, stream_token, accept_token,
-          gen, verbosity, layers_output);
+          weights_u8, inference_state_u8, runtime_config, prompt, pos, kv_cache,
+          pool, timing_info, layers_output);
       break;
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
@@ -1994,13 +1983,10 @@ void GenerateGemma(Model model, const WeightStorageT& weights,
                    RuntimeConfig runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
-                   const StreamFunc& stream_token, std::mt19937& gen) {
+                   TimingInfo& timing_info) {
   HWY_DYNAMIC_DISPATCH(GenerateImplT)(
-      model, weights, inference_state,
-      runtime_config.max_tokens, runtime_config.max_generated_tokens,
-      runtime_config.temperature, prompt, start_pos, kv_cache, pool,
-      stream_token, [](int) { return true; }, gen, runtime_config.verbosity,
-      /*layers_output=*/nullptr);
+      model, weights, inference_state, runtime_config, prompt, start_pos,
+      kv_cache, pool, timing_info, /*layers_output=*/nullptr);
 }
 
 void CompressWeights(gcpp::Model model, const Path& weights,

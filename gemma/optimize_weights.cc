@@ -112,16 +112,25 @@ void Run(Args& args) {
   WeightStorageT backward = AllocateForwardPass(args.model_type);
   WeightStorageT inference = AllocateInferenceState(args.model_type);
   auto kv_cache = CreateKVCache(args.model_type);
-  RuntimeConfig runtime = { 32U, 16U, 1.0f, 0 };
+  size_t max_tokens = 32;
+  size_t max_generated_tokens = 16;
+  float temperature = 1.0f;
+  int verbosity = 0;
+  const auto accept_token = [](int) { return true; };
 
-  auto generate = [&](const std::vector<int>& prompt) {
+  const auto generate = [&](const std::vector<int>& prompt) {
     std::vector<int> reply;
     auto stream_token = [&reply](int token, float) {
       reply.push_back(token);
       return token != ReverseSequenceSampler::kEndToken;
     };
+    RuntimeConfig runtime = {
+      max_tokens, max_generated_tokens, temperature, verbosity, &gen,
+      stream_token, accept_token,
+    };
+    TimingInfo timing_info;
     GenerateGemma(args.model_type, weights, inference, runtime, prompt, 0,
-                  kv_cache, pool, stream_token, gen);
+                  kv_cache, pool, timing_info);
     return reply;
   };
 

@@ -446,6 +446,7 @@ struct TestConfig {
   static constexpr int kQKVDim = 12;
   static constexpr int kFFHiddenDim = 48;
   static constexpr int kLayers = 2;
+  static constexpr bool kPostNormScale = false;
 
   static constexpr int kKVHeads = 1;
   static constexpr int kConv1dWidth = 0;

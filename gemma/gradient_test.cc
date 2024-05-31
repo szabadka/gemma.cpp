@@ -281,6 +281,7 @@ struct TestConfig {
   static constexpr int kQKVDim = 16;
   static constexpr int kFFHiddenDim = 64;
   static constexpr int kLayers = 2;
+  static constexpr bool kPostNormScale = false;
 
   static constexpr int kKVHeads = 1;
   static constexpr int kConv1dWidth = 0;
@@ -298,7 +299,7 @@ using WeightsF = Weights<float, TConfig>;
 
 void TestEndToEnd() {
   std::mt19937 gen(42);
-  hwy::ThreadPool pool(8);
+  hwy::ThreadPool pool(0);
   WeightsWrapper<float, TestConfig> weights;
   WeightsWrapper<float, TestConfig> grad;
   ActivationsWrapper<float, TestConfig> forward0;

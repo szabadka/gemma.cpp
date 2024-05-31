@@ -369,8 +369,8 @@ HWY_INLINE void MatVecLoop(const ArrayT& mat, const size_t mat_ofs,
 }
 
 // Simple version without tiling nor threading, but two offsets/outputs.
-template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
-          typename VecT, typename AddT>
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT,
+          typename AddT>
 HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
                                     const size_t mat_ofs1,
                                     const VecT* HWY_RESTRICT vec_aligned,
@@ -379,22 +379,16 @@ HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
                                     float* HWY_RESTRICT out0,
                                     float* HWY_RESTRICT out1) {
   PROFILER_ZONE("TwoOfsMatVecAddLoop");
-  constexpr bool kVecEO = false;
   const hn::ScalableTag<float> df;
   constexpr bool kVecEO = false;
 
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs0 = mat_ofs0 + (idx_row)*kInner;
     const size_t row_ofs1 = mat_ofs1 + (idx_row)*kInner;
-    if constexpr (kAdd) {
-      out0[idx_row] = hwy::ConvertScalarTo<float>(add0[idx_row]) +
-                      Dot<kVecEO>(df, mat, row_ofs0, vec_aligned, kInner);
-      out1[idx_row] = hwy::ConvertScalarTo<float>(add1[idx_row]) +
-                      Dot<kVecEO>(df, mat, row_ofs1, vec_aligned, kInner);
-    } else {
-      out0[idx_row] = Dot<kVecEO>(df, mat, row_ofs0, vec_aligned, kInner);
-      out1[idx_row] = Dot<kVecEO>(df, mat, row_ofs1, vec_aligned, kInner);
-    }
+    out0[idx_row] = hwy::ConvertScalarTo<float>(add0[idx_row]) +
+                    Dot<kVecEO>(df, mat, row_ofs0, vec_aligned, kInner);
+    out1[idx_row] = hwy::ConvertScalarTo<float>(add1[idx_row]) +
+                    Dot<kVecEO>(df, mat, row_ofs1, vec_aligned, kInner);
   }
 }
 
@@ -1075,13 +1069,13 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size) {
   vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  hn::Transform(d, x, mask_pos,
+  hn::Transform(d, x, size,
                 [&vmax](const auto d, const auto value) HWY_ATTR {
                   return hn::Exp(d, hn::Sub(value, vmax));
                 });
 
   auto sum = hn::Zero(d);
-  Foreach(d, x, mask_pos, sum,
+  Foreach(d, x, size, sum,
           [&sum](const auto d, const auto value)
               HWY_ATTR { sum = hn::Add(sum, value); });
 

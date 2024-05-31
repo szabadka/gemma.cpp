@@ -128,7 +128,7 @@ void GenerateGemma(Model model, const WeightStorageT& weights,
                    RuntimeConfig runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
-                   const StreamFunc& stream_token, std::mt19937& gen);
+                   TimingInfo& timing_info);
 
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool);

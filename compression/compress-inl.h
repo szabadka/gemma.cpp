@@ -538,8 +538,8 @@ class Compressor {
   template <typename MatT, size_t kCapacity>
   void operator()(const char* name, const std::array<float, kCapacity>* weights,
                   CompressedArray<MatT, kCapacity>* compressed) {
-    Insert(name, weights.data(), kCapacity, work_, compressed.CompressedSize(),
-           compressed.data(), 0, pool_);
+    Insert(name, weights->data(), kCapacity, work_,
+           compressed->CompressedSize(), compressed->data(), 0, pool_);
   }
 
   template <typename MatT>
