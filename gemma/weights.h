@@ -75,6 +75,9 @@ struct Layer {
   std::array<T, kFFBiases ? kModelDim : 0> ffw_output_biases;
 };
 
+template <class TConfig>
+using LayerF = Layer<float, TConfig>;
+
 template<typename T, typename TConfig>
 void ZeroInit(Layer<T, TConfig>& layer) {
   memset(&layer, 0, sizeof(layer));
@@ -119,6 +122,9 @@ struct Weights {
     return layer_ptrs.layers[layer].get();
   }
 };
+
+template <class TConfig>
+using WeightsF = Weights<float, TConfig>;
 
 template <typename T, typename TConfig>
 hwy::AlignedFreeUniquePtr<uint8_t[]> AllocateWeights(hwy::ThreadPool& pool) {

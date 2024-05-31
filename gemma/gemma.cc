@@ -113,7 +113,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
   }
 
   WeightStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
-  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
+  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
 
   size_t scale_pos = 0;
   FILE* fptr;
@@ -148,7 +148,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
            sizeof(weights->final_norm_scale));
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
     auto type = TConfig::kLayerConfig[layer];
-    Layer<float, TConfig>* layer_view = weights->GetLayer(layer);
+    LayerF<TConfig>* layer_view = weights->GetLayer(layer);
 
 #define READ_WEIGHTS(name)                                                 \
   do {                                                                     \
@@ -225,7 +225,7 @@ template <class TConfig>
 struct CompressedLayer {
   // No ctor/dtor, allocated via AllocateAligned.
 
-  using TLayer = gcpp::Layer<float, TConfig>;
+  using TLayer = gcpp::LayerF<TConfig>;
   using WeightT = typename TConfig::WeightT;
 
   static constexpr size_t kHeads = TLayer::kHeads;
@@ -318,12 +318,6 @@ struct CompressedWeights {
 };
 
 template <class TConfig>
-using WeightsF = Weights<float, TConfig>;
-
-template <class TConfig>
-using LayerF = Layer<float, TConfig>;
-
-template <class TConfig>
 using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
                          WeightsF<TConfig>>;
 
@@ -331,7 +325,7 @@ using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
 template <class TConfig, size_t TBatchSize>
 struct Activations {
   static constexpr size_t kBatchSize = TBatchSize;
-  using LayerConfig = Layer<float, TConfig>;
+  using LayerConfig = LayerF<TConfig>;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
@@ -465,7 +459,7 @@ void DeleteLayersPtrs(CompressedWeights<Config>* c_weights) {
   c_weights->c_layer_ptrs.~CompressedLayerPointers<Config>();
 }
 template <class Config>
-void DeleteLayersPtrs(Weights<float, Config>* weights) {
+void DeleteLayersPtrs(WeightsF<Config>* weights) {
   weights->layer_ptrs.~LayerPointers<float, Config>();
 }
 }  // namespace
@@ -1136,7 +1130,7 @@ void GenerateImpl(const WeightStorageT& weights_u8,
                   KVCache& kv_cache, hwy::ThreadPool& pool,
                   TimingInfo& timing_info, LayersOutputT* layers_output) {
   const WeightsF<TConfig>& weights =
-      *reinterpret_cast<const Weights<float, TConfig>*>(weights_u8.get());
+      *reinterpret_cast<const WeightsF<TConfig>*>(weights_u8.get());
   InferenceState<TConfig>& inference_state =
       *reinterpret_cast<InferenceState<TConfig>*>(inference_state_u8.get());
   GenerateImpl<TConfig, WeightsF>(
@@ -1301,7 +1295,7 @@ float ComputeCrossEntropyGriffin2B(GemmaImpl<ConfigGriffin2B>& gemma,
 //
 // This avoids repeating the list of tensors between loading and compressing.
 template <class TConfig, class Func>
-void ForEachTensor(Weights<float, TConfig>* weights,
+void ForEachTensor(WeightsF<TConfig>* weights,
                    CompressedWeights<TConfig>* c_weights, Func& func) {
   func("c_embedding",
        weights ? &weights->embedder_input_embedding : nullptr,
@@ -1313,7 +1307,7 @@ void ForEachTensor(Weights<float, TConfig>* weights,
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    Layer<float, TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
+    LayerF<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
     CompressedLayer<TConfig>* layer_weights =
         c_weights ? c_weights->GetLayer(idx) : nullptr;
 
@@ -1522,7 +1516,7 @@ class WeightLogger {
 
 template <typename TConfig>
 void LogWeightStats(const WeightStorageT& weights_u8) {
-  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
+  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   WeightLogger logger;
   ForEachTensor<TConfig>(weights, nullptr, logger);
   printf("%-20s  %12zu\n", "Total", logger.total_weights);
@@ -1564,8 +1558,8 @@ void CompressWeights(const Path& weights_path,
   const hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
       LoadWeights<TConfig>(weights_path, pool, scale_for_compression);
   LogWeightStats<TConfig>(weights_u8);
-  Weights<float, TConfig>* weights =
-      reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
+  WeightsF<TConfig>* weights =
+      reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   Compressor compressor(pool);
   ForEachTensor<TConfig>(weights, c_weights, compressor);
   compressor.AddScales(weights->scales.data(), weights->scales.size());
@@ -1604,7 +1598,7 @@ void DecompressWeights(const Path& weights_path,
 
   // Allocate weights.
   WeightStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
-  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
+  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
 
   // Get weights, compress, and store.
   const WeightStorageT c_weights_u8 =
@@ -1660,7 +1654,7 @@ class WeightInitializer {
 template <typename TConfig>
 void InitWeights(InitMode mode, WeightStorageT& weights_u8,
                  std::mt19937* gen) {
-  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
+  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   // TODO(szabadka) Use the same weight initialization method as in the python
   // version.
   // TODO(szabadka) Implement multi-threaded initialization.
@@ -1701,16 +1695,16 @@ template <typename TConfig>
 void UpdateWeights(const WeightStorageT& grad_u8, float scale,
                    WeightStorageT& weights_u8, hwy::ThreadPool& pool) {
   const auto& grad =
-      *reinterpret_cast<const Weights<float, TConfig>*>(grad_u8.get());
-  auto* weights = reinterpret_cast<Weights<float, TConfig>*>(weights_u8.get());
+      *reinterpret_cast<const WeightsF<TConfig>*>(grad_u8.get());
+  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
 
   UpdateTensor(grad.embedder_input_embedding, scale,
                weights->embedder_input_embedding);
   UpdateTensor(grad.final_norm_scale, scale, weights->final_norm_scale);
 
   pool.Run(0, TConfig::kLayers, [&](uint64_t idx, size_t /*thread*/) {
-    const Layer<float, TConfig>* gl = grad.GetLayer(idx);
-    Layer<float, TConfig>* wl = weights->GetLayer(idx);
+    const LayerF<TConfig>* gl = grad.GetLayer(idx);
+    LayerF<TConfig>* wl = weights->GetLayer(idx);
 
 #define UPDATE_FUNC(member) UpdateTensor(gl->member, scale, wl->member);
     // TODO(szabadka) Implement it for Griffin as well.
@@ -1765,7 +1759,7 @@ void CrossEntropyLossBackwardStep(const Prompt& prompt,
                                   WeightStorageT& grad_u8,
                                   WeightStorageT& backward_u8,
                                   hwy::ThreadPool& pool) {
-  using TWeights = Weights<float, TConfig>;
+  using TWeights = WeightsF<TConfig>;
   const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
   using TAct = ForwardPass<float, TConfig>;
