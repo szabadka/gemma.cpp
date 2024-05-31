@@ -100,7 +100,6 @@ struct Gemma {
         hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after the GemmaInterface dtor is defined.
   const GemmaTokenizer* Tokenizer() const;
-  const ByteStorageT& Weights() const;
   std::unique_ptr<GemmaInterface> impl_;
 };
 

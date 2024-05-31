@@ -8,8 +8,6 @@
 #include <utility>  // std::pair
 #include <vector>
 
-#include "nlohmann/json.hpp"
-#include "gemma/backprop_scalar.h"
 #include "gemma/gemma.h"
 #include "util/app.h"
 #include "util/args.h"
@@ -204,30 +202,14 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
     auto kv_cache = CreateKVCache(model_type);
-#if 1
     float entropy =
         ComputeCrossEntropy(model, num_tokens, prompt_slice, kv_cache, pool,
                             app.verbosity);
-#elif 1
-    gcpp::ByteStorageT forward = AllocateForwardPass(model_type);
-    float entropy = CrossEntropyLossForwardStep(
-        prompt_slice, 1, model_type, model.Weights(), forward, pool);
-#else
-    using WeightsT = gcpp::Weights<float, gcpp::ConfigGemma2B>;
-    const auto& weights = *reinterpret_cast<const WeightsT*>(
-        model.Weights().get());
-    gcpp::ActivationsWrapper<float, gcpp::ConfigGemma2B> activations;
-    gcpp::Prompt prompt = { prompt_slice, 1 };
-    float entropy = CrossEntropyLossForwardPass(
-        prompt, weights, activations.get());
-#endif
-
     total_entropy += entropy;
     LogSpeedStats(time_start, pos + num_tokens);
     std::string text_slice;
     HWY_ASSERT(model.Tokenizer()->Decode(prompt_slice, &text_slice));
     total_input_len += text_slice.size();
-    printf("Total cross entropy: %f\n", total_entropy);
     printf("Cross entropy per byte: %f [cumulative: %f]\n",
            entropy / text_slice.size(), total_entropy / total_input_len);
   }

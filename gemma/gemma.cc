@@ -371,7 +371,6 @@ struct GemmaInterface {
   virtual ~GemmaInterface() = default;
 
   virtual const GemmaTokenizer* Tokenizer() const = 0;
-  virtual const ByteStorageT& Weights() const = 0;
 
   virtual void Generate(const RuntimeConfig& runtime_config,
                         const std::vector<int>& prompt, size_t start_pos,
@@ -466,7 +465,6 @@ struct GemmaImpl : public GemmaInterface {
   }
 
   const GemmaTokenizer* Tokenizer() const override { return &tokenizer; }
-  const ByteStorageT& Weights() const override { return weights_u8; }
 
   void Generate(const RuntimeConfig& runtime_config,
                 const std::vector<int>& prompt, size_t start_pos,
@@ -1813,7 +1811,6 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 
 const GemmaTokenizer* Gemma::Tokenizer() const { return impl_->Tokenizer(); }
-const ByteStorageT& Gemma::Weights() const { return impl_->Weights(); }
 
 void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
