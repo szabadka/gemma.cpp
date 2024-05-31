@@ -13,18 +13,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_
-#define THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_
+#include "gemma/weights.h"
 
-#include "hwy/aligned_allocator.h"
+#include "gemma/common.h"
+#include "gemma/configs.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
-using ByteStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
-
-// Model variants: see configs.h for details.
-enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };
+ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return AllocateWeights<float, ConfigGemma2B>(pool);
+    case Model::GEMMA_7B:
+      return AllocateWeights<float, ConfigGemma7B>(pool);
+    case Model::GRIFFIN_2B:
+      return AllocateWeights<float, ConfigGriffin2B>(pool);
+    case Model::GEMMA_TINY:
+      return AllocateWeights<float, ConfigGemmaTiny>(pool);
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
 
 }  // namespace gcpp
-
-#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_

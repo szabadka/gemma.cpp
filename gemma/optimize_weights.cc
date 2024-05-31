@@ -20,6 +20,7 @@
 
 #include "gemma/gemma.h"
 #include "gemma/sampler.h"
+#include "gemma/weights.h"
 #include "util/args.h"
 
 namespace gcpp {

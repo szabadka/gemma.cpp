@@ -1425,21 +1425,6 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeightsT(gcpp::Model model,
   }
 }
 
-ByteStorageT AllocateWeightsT(gcpp::Model model, hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      return AllocateWeights<float, ConfigGemma2B>(pool);
-    case Model::GEMMA_7B:
-      return AllocateWeights<float, ConfigGemma7B>(pool);
-    case Model::GRIFFIN_2B:
-      return AllocateWeights<float, ConfigGriffin2B>(pool);
-    case Model::GEMMA_TINY:
-      return AllocateWeights<float, ConfigGemmaTiny>(pool);
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 ByteStorageT AllocateInferenceStateT(Model model) {
   switch (model) {
     case Model::GEMMA_2B:
@@ -1786,7 +1771,6 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 
-HWY_EXPORT(AllocateWeightsT);
 HWY_EXPORT(AllocateInferenceStateT);
 HWY_EXPORT(AllocateForwardPassT);
 HWY_EXPORT(LogWeightStatsT);
@@ -1981,10 +1965,6 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
 ByteStorageT LoadWeights(const Path& weights, Model model_type,
                            hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(LoadWeightsT)(model_type, weights, pool);
-}
-
-ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool) {
-  return HWY_DYNAMIC_DISPATCH(AllocateWeightsT)(model, pool);
 }
 
 ByteStorageT AllocateInferenceState(Model model) {

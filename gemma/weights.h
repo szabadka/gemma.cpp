@@ -176,6 +176,8 @@ class WeightsWrapper {
   Weights<T, TConfig>* weights_;
 };
 
+ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_

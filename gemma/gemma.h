@@ -145,7 +145,6 @@ ByteStorageT LoadWeights(const Path& weights, Model model_type,
 
 enum class InitMode { RAND_INIT, ZERO_INIT };
 
-ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
 ByteStorageT AllocateInferenceState(Model model);
 ByteStorageT AllocateForwardPass(Model model);
 
