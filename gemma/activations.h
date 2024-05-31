@@ -16,9 +16,8 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_ACTIVATIONS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_ACTIVATIONS_H_
 
+#include "gemma/common.h"
 #include "hwy/aligned_allocator.h"
-
-#include "gemma/configs.h"
 
 namespace gcpp {
 
@@ -55,22 +54,30 @@ struct ForwardPass {
   std::array<T, kSeqLen * kModelDim> final_norm_output;
   std::array<T, kSeqLen * kVocabSize> logits;
   std::array<T, kSeqLen * kVocabSize> probs;
+
+  static ByteStorageT Allocate() {
+    return hwy::AllocateAligned<uint8_t>(sizeof(ForwardPass<T, TConfig>));
+  }
 };
 
 template<typename T, typename TConfig>
 class ActivationsWrapper {
+  using WrappedT = ForwardPass<T, TConfig>;
+
  public:
   ActivationsWrapper()
-      : data_(hwy::AllocateAligned<uint8_t>(sizeof(ForwardPass<T, TConfig>))),
-        activations_(reinterpret_cast<ForwardPass<T, TConfig>*>(data_.get())) {}
+      : data_(WrappedT::Allocate()),
+        activations_(*reinterpret_cast<WrappedT*>(data_.get())) {}
 
-  const ForwardPass<T, TConfig>& get() const { return *activations_; }
-  ForwardPass<T, TConfig>& get() { return *activations_; }
+  const WrappedT& get() const { return activations_; }
+  WrappedT& get() { return activations_; }
 
  private:
-  hwy::AlignedFreeUniquePtr<uint8_t[]> data_;
-  ForwardPass<T, TConfig>* activations_;
+  ByteStorageT data_;
+  WrappedT& activations_;
 };
+
+ByteStorageT AllocateForwardPass(Model model);
 
 }  // namespace gcpp
 

@@ -47,6 +47,7 @@ set(SOURCES
   compression/sfp-inl.h
   compression/test_util.h
   gemma/configs.h
+  gemma/activations.cc
   gemma/common_scalar.cc
   gemma/gemma.cc
   gemma/gemma.h

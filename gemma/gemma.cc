@@ -93,15 +93,6 @@ float ScaleWeights(float* data, size_t len) {
   return scale;
 }
 
-template <typename T, typename TConfig>
-ByteStorageT AllocateForwardPass() {
-  using TForward = ForwardPass<T, TConfig>;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> forward_u8 =
-      hwy::AllocateAligned<uint8_t>(sizeof(TForward));
-  TForward* forward = reinterpret_cast<TForward*>(forward_u8.get());
-  return forward_u8;
-}
-
 template <typename TConfig>
 hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
     const Path& checkpoint, hwy::ThreadPool& pool,
@@ -1436,17 +1427,6 @@ ByteStorageT AllocateInferenceStateT(Model model) {
   }
 }
 
-ByteStorageT AllocateForwardPassT(gcpp::Model model) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      return AllocateForwardPass<float, ConfigGemma2B>();
-    case Model::GEMMA_TINY:
-      return AllocateForwardPass<float, ConfigGemmaTiny>();
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 void LogVec(const char* name, const float* data, size_t len) {
   float minval = std::numeric_limits<float>::max();
   float maxval = std::numeric_limits<float>::min();
@@ -1772,7 +1752,6 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 
 HWY_EXPORT(AllocateInferenceStateT);
-HWY_EXPORT(AllocateForwardPassT);
 HWY_EXPORT(LogWeightStatsT);
 HWY_EXPORT(InitWeightsT);
 HWY_EXPORT(UpdateWeightsT);
@@ -1969,10 +1948,6 @@ ByteStorageT LoadWeights(const Path& weights, Model model_type,
 
 ByteStorageT AllocateInferenceState(Model model) {
   return HWY_DYNAMIC_DISPATCH(AllocateInferenceStateT)(model);
-}
-
-ByteStorageT AllocateForwardPass(Model model) {
-  return HWY_DYNAMIC_DISPATCH(AllocateForwardPassT)(model);
 }
 
 void LogWeightStats(Model model, const ByteStorageT& weights) {
