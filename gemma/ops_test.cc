@@ -283,7 +283,7 @@ struct TestSoftmax {
     }
 
     SourceSoftmax(e, count, count);
-    Softmax(x, count);
+    Softmax(x, count, count);
 
     T sum = 0.0f;
     for (size_t i = 0; i < count; ++i) {

@@ -35,7 +35,6 @@ struct ForwardLayer {
   std::array<T, kSeqLen * kHeads * kSeqLen> att;
   std::array<T, kSeqLen * kHeads * kQKVDim> att_out;
   std::array<T, kSeqLen * kModelDim> att_post1;
-  std::array<T, kSeqLen * kModelDim> att_post2;
   std::array<T, kSeqLen * kModelDim> attention_out;
   std::array<T, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
   std::array<T, kSeqLen * kFFHiddenDim * 2> ffw_hidden;

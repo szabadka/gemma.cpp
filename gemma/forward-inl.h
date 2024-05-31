@@ -170,8 +170,8 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
     }
   });
 
-  hwy::ZeroBytes(activations.att_post2.data(),
-                 num_tokens * kModelDim * sizeof(activations.att_post2[0]));
+  hwy::ZeroBytes(activations.attention_out.data(),
+                 num_tokens * kModelDim * sizeof(activations.attention_out[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     for (size_t head = 0; head < kHeads; ++head) {
       MatVec<kModelDim, kQKVDim>(
@@ -179,14 +179,13 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
           activations.att_out.data() + pos * kHeads * kQKVDim + head * kQKVDim,
           nullptr, activations.att_post1.data() + pos * kModelDim, pool);
       AddFrom(activations.att_post1.data() + pos * kModelDim,
-              activations.att_post2.data() + pos * kModelDim, kModelDim);
+              activations.attention_out.data() + pos * kModelDim, kModelDim);
     }
   }
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    Add(activations.input.data() + pos * kModelDim,
-        activations.att_post2.data() + pos * kModelDim,
-        activations.attention_out.data() + pos * kModelDim, kModelDim);
+    AddFrom(activations.input.data() + pos * kModelDim,
+            activations.attention_out.data() + pos * kModelDim, kModelDim);
   }
 
   ApplyRMSNorm(weights.pre_ffw_norm_scale.data(),
