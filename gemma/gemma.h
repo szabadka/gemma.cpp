@@ -72,6 +72,8 @@ using StreamFunc = std::function<bool(int, float)>;
 // want to generate and True for tokens you want to generate.
 using AcceptFunc = std::function<bool(int)>;
 
+constexpr int EOS_ID = 1;
+
 struct RuntimeConfig {
   size_t max_tokens;
   size_t max_generated_tokens;
@@ -80,6 +82,7 @@ struct RuntimeConfig {
   std::mt19937* gen;
   const StreamFunc& stream_token;
   const AcceptFunc& accept_token;
+  int eos_id = EOS_ID;
 };
 
 struct GemmaInterface;
@@ -167,8 +170,6 @@ void CrossEntropyLossBackwardStep(
     const Prompt& prompt, const Model& model,
     const WeightStorageT& weights, const WeightStorageT& forward,
     WeightStorageT& grad, WeightStorageT& backward, hwy::ThreadPool& pool);
-
-constexpr int EOS_ID = 11;
 
 }  // namespace gcpp
 

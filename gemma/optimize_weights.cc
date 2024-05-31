@@ -126,7 +126,7 @@ void Run(Args& args) {
     };
     RuntimeConfig runtime = {
       max_tokens, max_generated_tokens, temperature, verbosity, &gen,
-      stream_token, accept_token,
+      stream_token, accept_token, ReverseSequenceSampler::kEndToken,
     };
     TimingInfo timing_info;
     GenerateGemma(args.model_type, weights, inference, runtime, prompt, 0,

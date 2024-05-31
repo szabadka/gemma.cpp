@@ -69,7 +69,7 @@
 constexpr bool kDryRunFread = false;
 
 // Setting this to false will load and use uncompressed weights.
-constexpr bool kWeightsAreCompressed = false;
+constexpr bool kWeightsAreCompressed = true;
 
 // Set this to true to debug tokenizer tokens.
 constexpr bool kShowTokenization = false;
@@ -318,12 +318,14 @@ struct CompressedWeights {
 };
 
 template <class TConfig>
-using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
-                         Weights<float, TConfig>>;
+using WeightsF = Weights<float, TConfig>;
 
 template <class TConfig>
-using LayerT = hwy::If<kWeightsAreCompressed, CompressedLayer<TConfig>,
-                       Layer<float, TConfig>>;
+using LayerF = Layer<float, TConfig>;
+
+template <class TConfig>
+using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
+                         WeightsF<TConfig>>;
 
 // Aligned.
 template <class TConfig, size_t TBatchSize>
@@ -1001,8 +1003,8 @@ void RangeChecks(size_t& max_tokens, size_t& max_generated_tokens,
   }
 }
 
-template <class TConfig>
-void GenerateImpl(const WeightsT<TConfig>& weights,
+template <class TConfig, template<typename> typename WeightsType>
+void GenerateImpl(const WeightsType<TConfig>& weights,
                   Activations<TConfig, kPrefillBatchSize>& prefill_activations,
                   Activations<TConfig, 1>& activations,
                   const RuntimeConfig& runtime_config,
@@ -1090,7 +1092,7 @@ void GenerateImpl(const WeightsT<TConfig>& weights,
           activations.logits.data(), kVocabSize, *runtime_config.gen,
           runtime_config.temperature, runtime_config.accept_token);
       if (!runtime_config.stream_token(token, activations.logits[token])) {
-        token = EOS_ID;
+        token = runtime_config.eos_id;
       }
       if (generate_pos == 0) {
         timing_info.time_to_first_token = hwy::platform::Now() - gen_start;
@@ -1100,10 +1102,10 @@ void GenerateImpl(const WeightsT<TConfig>& weights,
       // process the tokens of the prompt one at a time.
       token = prompt.at(pos_offset + 1);
       if (!runtime_config.stream_token(token, 0)) {
-        token = EOS_ID;
+        token = runtime_config.eos_id;
       }
     }
-    if (token == EOS_ID) {
+    if (token == runtime_config.eos_id) {
       if (runtime_config.verbosity >= 2) {
         const double gen_end = hwy::platform::Now();
         timing_info.gen_tok_sec =
@@ -1123,9 +1125,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma,
                   LayersOutputT* layers_output) {
   const WeightsT<TConfig>& weights =
       *reinterpret_cast<WeightsT<TConfig>*>(gemma.weights_u8.get());
-  GenerateImpl(weights, *gemma.prefill.get(), *gemma.state.get(),
-               runtime_config, prompt, pos, kv_cache, pool, timing_info,
-               layers_output);
+  GenerateImpl<TConfig, WeightsT>(
+      weights, *gemma.prefill.get(), *gemma.state.get(), runtime_config, prompt,
+      pos, kv_cache, pool, timing_info, layers_output);
 }
 
 template <class TConfig>
@@ -1135,13 +1137,13 @@ void GenerateImpl(const WeightStorageT& weights_u8,
                   const std::vector<int>& prompt, size_t pos,
                   KVCache& kv_cache, hwy::ThreadPool& pool,
                   TimingInfo& timing_info, LayersOutputT* layers_output) {
-  const WeightsT<TConfig>& weights =
-      *reinterpret_cast<const WeightsT<TConfig>*>(weights_u8.get());
+  const WeightsF<TConfig>& weights =
+      *reinterpret_cast<const Weights<float, TConfig>*>(weights_u8.get());
   InferenceState<TConfig>& inference_state =
       *reinterpret_cast<InferenceState<TConfig>*>(inference_state_u8.get());
-  GenerateImpl(weights, inference_state.prefill, inference_state.state,
-               runtime_config, prompt, pos, kv_cache, pool, timing_info,
-               layers_output);
+  GenerateImpl<TConfig, WeightsF>(
+      weights, inference_state.prefill, inference_state.state, runtime_config,
+      prompt, pos, kv_cache, pool, timing_info, layers_output);
 }
 
 void GenerateImplT(Model model, const WeightStorageT& weights_u8,
@@ -1751,10 +1753,10 @@ float CrossEntropyLossForwardStep(const std::vector<int>& prompt,
                                   WeightStorageT& forward_u8,
                                   hwy::ThreadPool& pool) {
   const auto& weights =
-      *reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
+      *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   auto& forward =
       *reinterpret_cast<ForwardPass<float, TConfig>*>(forward_u8.get());
-  return CrossEntropyLossForwardStep<TConfig, WeightsT, LayerT>(
+  return CrossEntropyLossForwardStep<TConfig, WeightsF, LayerF>(
       prompt, context_size, weights, forward, pool);
 }
 
