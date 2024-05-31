@@ -24,6 +24,7 @@
 
 #include "compression/io.h"  // Path
 #include "gemma/activations.h"
+#include "gemma/common.h"
 #include "gemma/configs.h"
 #include "gemma/prompt.h"
 #include "hwy/aligned_allocator.h"
@@ -53,10 +54,6 @@ struct KVCache {
       rglru_cache;  // kModelDim * kGriffinLayers
 };
 
-using WeightStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
-
-// Model variants: see configs.h for details.
-enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
 // Returns error string or nullptr if OK.

@@ -13,16 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_
-#define THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_SCALAR_H_
+#define THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_SCALAR_H_
 
 namespace gcpp {
 
-using WeightStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
-
-// Model variants: see configs.h for details.
-enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };
+float EmbeddingScaling(int model_dim);
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_SCALAR_H_

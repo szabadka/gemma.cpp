@@ -16,7 +16,7 @@
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "gemma/common.cc"  // NOLINT
+#define HWY_TARGET_INCLUDE "gemma/common_scalar.cc"  // NOLINT
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
 
 #include "gemma/ops.h"

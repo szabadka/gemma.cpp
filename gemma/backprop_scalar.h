@@ -27,7 +27,7 @@
 #include <vector>
 
 #include "gemma/activations.h"
-#include "gemma/common.h"
+#include "gemma/common_scalar.h"
 #include "gemma/prompt.h"
 #include "gemma/weights.h"
 

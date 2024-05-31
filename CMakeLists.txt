@@ -47,7 +47,7 @@ set(SOURCES
   compression/sfp-inl.h
   compression/test_util.h
   gemma/configs.h
-  gemma/common.cc
+  gemma/common_scalar.cc
   gemma/gemma.cc
   gemma/gemma.h
   gemma/ops.h
@@ -123,7 +123,7 @@ foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
   gtest_discover_tests(${TESTNAME})
 endforeach ()
 
-add_executable(backprop_test gemma/backprop_test.cc gemma/common.cc gemma/backprop_scalar.h)
+add_executable(backprop_test gemma/backprop_test.cc gemma/common_scalar.cc gemma/backprop_scalar.h)
 target_include_directories(backprop_test PRIVATE .)
 target_link_libraries(backprop_test PRIVATE GTest::gtest_main hwy hwy_contrib)
 
