@@ -99,8 +99,8 @@ struct CompressTraits<float> {
                               const MatT* HWY_RESTRICT in, size_t in_ofs,
                               const VecT* HWY_RESTRICT vec_aligned,
                               size_t num) {
-    HWY_DASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
-    HWY_DASSERT(hn::IsAligned(df, vec_aligned));
+    HWY_ASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
+    HWY_ASSERT(hn::IsAligned(df, vec_aligned));
     constexpr int kAssumptions =
         hn::Dot::kAtLeastOneVector | hn::Dot::kMultipleOfVector;
     // vec_aligned must be the second argument because hn::Dot supports f32*bf16
@@ -488,15 +488,26 @@ HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
         const hn::ScalableTag<OutT> d;
 
         const size_t ofs = idx_batch * kBatch;
-        const size_t num = idx_batch == num_batches - 1 ? (num - ofs) : kBatch;
+        const size_t batch =
+            idx_batch == num_batches - 1 ? (num - ofs) : kBatch;
         Traits::Decompress(d, compressed.size(), compressed.data(),
-                           compressed_ofs + ofs, out + ofs, num);
+                           compressed_ofs + ofs, out + ofs, batch);
       });
 
   const double t1 = hwy::platform::Now();
   const double mb = num * sizeof(MatT) * 1E-6;
   const double mbps = mb / (t1 - t0);
   fprintf(stderr, "Decompress %.1f MB/s\n", mbps);
+}
+
+// Returns dot product with `vec_aligned` of length `num`.
+template <bool kVecEO, class DF, size_t kCapacity, typename VecT>
+HWY_INLINE float Dot(DF df, const std::array<float, kCapacity>& w, size_t ofs,
+                     const VecT* x, size_t num) {
+  HWY_DASSERT(ofs + num <= kCapacity);
+  HWY_DASSERT(hn::IsAligned(df, x));
+  using Traits = CompressTraits<float>;
+  return Traits::Dot(df, w.size(), w.data(), ofs, x, num);
 }
 
 // Returns dot product with `vec_aligned` of length `num`.
@@ -525,9 +536,9 @@ class Compressor {
 
   // Called for each tensor; compresses it and stores to the cache.
   template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, const float* weights,
-                  CompressedArray<MatT, kCapacity>& compressed) {
-    Insert(name, weights, kCapacity, work_, compressed.CompressedSize(),
+  void operator()(const char* name, const std::array<float, kCapacity>* weights,
+                  CompressedArray<MatT, kCapacity>* compressed) {
+    Insert(name, weights.data(), kCapacity, work_, compressed.CompressedSize(),
            compressed.data(), 0, pool_);
   }
 
@@ -559,6 +570,46 @@ class Compressor {
   CompressWorkingSet work_;
   hwy::ThreadPool& pool_;
   BlobWriter writer_;
+};
+
+class Decompressor {
+ public:
+  explicit Decompressor(hwy::ThreadPool& pool, const Path& path)
+      : pool_(pool), output_(OpenFileOrNull(path, "w+")), offset_(0),
+        error_(false) {
+    if (!output_) {
+      fprintf(stderr, "Failed to open to output file %s\n", path.path.c_str());
+      error_ = true;
+    }
+  }
+
+  // Called for each tensor; decompresses it and stores to the cache.
+  template <typename MatT, size_t kCapacity>
+  void operator()(const char* name, std::array<float, kCapacity>* weights,
+                  const CompressedArray<MatT, kCapacity>* compressed) {
+    if (error_) return;
+    fprintf(stderr, "Decompressing %s (%zuM), please wait\n", name,
+            kCapacity / (1000 * 1000));
+    Decompress(*compressed, 0, weights->data(), kCapacity, pool_);
+    for (size_t i = 0; i < kCapacity; ++i) {
+      (*weights)[i] *= compressed->scale();
+    }
+    fprintf(stderr, "%s value range: %f .. %f\n",
+            name, *std::min_element(weights->begin(), weights->end()),
+            *std::max_element(weights->begin(), weights->end()));
+    if (!output_->Write(weights->data(), sizeof(*weights), offset_)) {
+      fprintf(stderr, "Failed to write tensor %s to output file\n", name);
+      error_ = true;
+      return;
+    }
+    offset_ += sizeof(*weights);
+  }
+
+ private:
+  hwy::ThreadPool& pool_;
+  std::unique_ptr<File> output_;
+  uint64_t offset_;
+  bool error_;
 };
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

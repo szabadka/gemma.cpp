@@ -201,7 +201,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() const {
-    if (max_tokens > gcpp::kSeqLen) {
+    if (max_tokens > GEMMA_MAX_SEQLEN) {
       return "max_tokens is larger than the maximum sequence length (see "
              "configs.h).";
     }

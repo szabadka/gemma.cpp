@@ -47,9 +47,11 @@ set(SOURCES
   compression/sfp-inl.h
   compression/test_util.h
   gemma/configs.h
+  gemma/common.cc
   gemma/gemma.cc
   gemma/gemma.h
   gemma/ops.h
+  gemma/weights.h
   util/app.h
   util/args.h
   )
@@ -103,6 +105,7 @@ if (GEMMA_ENABLE_TESTS)
 set(GEMMA_TEST_FILES
   gemma/ops_test.cc
   gemma/gemma_test.cc
+  gemma/gradient_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
@@ -119,9 +122,17 @@ foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
 
   gtest_discover_tests(${TESTNAME})
 endforeach ()
+
+add_executable(backprop_test gemma/backprop_test.cc gemma/common.cc gemma/backprop_scalar.h)
+target_include_directories(backprop_test PRIVATE .)
+target_link_libraries(backprop_test PRIVATE GTest::gtest_main hwy hwy_contrib)
+
 endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
 
 add_executable(compress_weights gemma/compress_weights.cc)
 target_link_libraries(compress_weights libgemma hwy hwy_contrib)
+
+add_executable(optimize_weights gemma/optimize_weights.cc)
+target_link_libraries(optimize_weights libgemma hwy hwy_contrib)

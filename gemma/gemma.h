@@ -23,7 +23,9 @@
 #include <vector>
 
 #include "compression/io.h"  // Path
+#include "gemma/activations.h"
 #include "gemma/configs.h"
+#include "gemma/prompt.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -51,8 +53,10 @@ struct KVCache {
       rglru_cache;  // kModelDim * kGriffinLayers
 };
 
+using WeightStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
+
 // Model variants: see configs.h for details.
-enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B };
+enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
 // Returns error string or nullptr if OK.
@@ -96,6 +100,7 @@ struct Gemma {
         hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after the GemmaInterface dtor is defined.
   const GemmaTokenizer* Tokenizer() const;
+  const WeightStorageT& Weights() const;
   std::unique_ptr<GemmaInterface> impl_;
 };
 
@@ -118,14 +123,52 @@ void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
                    TimingInfo& timing_info,
                    LayersOutputT* layers_output = nullptr);
 
+void GenerateGemma(Model model, const WeightStorageT& weights,
+                   WeightStorageT& inference_state,
+                   RuntimeConfig runtime_config,
+                   const std::vector<int>& prompt, size_t start_pos,
+                   KVCache& kv_cache, hwy::ThreadPool& pool,
+                   const StreamFunc& stream_token, std::mt19937& gen);
+
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool);
+
+void DecompressWeights(gcpp::Model model, const Path& weights,
+                       const Path& compressed_weights, hwy::ThreadPool& pool);
 
 float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);
 
-constexpr int EOS_ID = 1;
+WeightStorageT LoadWeights(const Path& weights, Model model_type,
+                           hwy::ThreadPool& pool);
+
+enum class InitMode { RAND_INIT, ZERO_INIT };
+
+WeightStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
+WeightStorageT AllocateInferenceState(Model model);
+WeightStorageT AllocateForwardPass(Model model);
+
+void LogWeightStats(Model model, const WeightStorageT& weights);
+
+void InitWeights(Model model, WeightStorageT& weights,
+                 InitMode init_mode, hwy::ThreadPool& pool,
+                 std::mt19937* gen = nullptr);
+
+void UpdateWeights(Model model, const WeightStorageT& grad, float scale,
+                   WeightStorageT& weights, hwy::ThreadPool& pool);
+
+float CrossEntropyLossForwardStep(
+    const std::vector<int>& prompt, size_t context_size, const Model& model,
+    const WeightStorageT& weights, WeightStorageT& forward,
+    hwy::ThreadPool& pool);
+
+void CrossEntropyLossBackwardStep(
+    const Prompt& prompt, const Model& model,
+    const WeightStorageT& weights, const WeightStorageT& forward,
+    WeightStorageT& grad, WeightStorageT& backward, hwy::ThreadPool& pool);
+
+constexpr int EOS_ID = 11;
 
 }  // namespace gcpp
 
