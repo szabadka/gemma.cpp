@@ -99,8 +99,8 @@ struct CompressTraits<float> {
                               const MatT* HWY_RESTRICT in, size_t in_ofs,
                               const VecT* HWY_RESTRICT vec_aligned,
                               size_t num) {
-    HWY_ASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
-    HWY_ASSERT(hn::IsAligned(df, vec_aligned));
+    HWY_DASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
+    HWY_DASSERT(hn::IsAligned(df, vec_aligned));
     constexpr int kAssumptions =
         hn::Dot::kAtLeastOneVector | hn::Dot::kMultipleOfVector;
     // vec_aligned must be the second argument because hn::Dot supports f32*bf16
@@ -536,10 +536,10 @@ class Compressor {
 
   // Called for each tensor; compresses it and stores to the cache.
   template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, const std::array<float, kCapacity>* weights,
-                  CompressedArray<MatT, kCapacity>* compressed) {
-    Insert(name, weights->data(), kCapacity, work_,
-           compressed->CompressedSize(), compressed->data(), 0, pool_);
+  void operator()(const char* name, const float* weights,
+                  CompressedArray<MatT, kCapacity>& compressed) {
+    Insert(name, weights, kCapacity, work_, compressed.CompressedSize(),
+           compressed.data(), 0, pool_);
   }
 
   template <typename MatT>
@@ -570,46 +570,6 @@ class Compressor {
   CompressWorkingSet work_;
   hwy::ThreadPool& pool_;
   BlobWriter writer_;
-};
-
-class Decompressor {
- public:
-  explicit Decompressor(hwy::ThreadPool& pool, const Path& path)
-      : pool_(pool), output_(OpenFileOrNull(path, "w+")), offset_(0),
-        error_(false) {
-    if (!output_) {
-      fprintf(stderr, "Failed to open to output file %s\n", path.path.c_str());
-      error_ = true;
-    }
-  }
-
-  // Called for each tensor; decompresses it and stores to the cache.
-  template <typename MatT, size_t kCapacity>
-  void operator()(const char* name, std::array<float, kCapacity>* weights,
-                  const CompressedArray<MatT, kCapacity>* compressed) {
-    if (error_) return;
-    fprintf(stderr, "Decompressing %s (%zuM), please wait\n", name,
-            kCapacity / (1000 * 1000));
-    Decompress(*compressed, 0, weights->data(), kCapacity, pool_);
-    for (size_t i = 0; i < kCapacity; ++i) {
-      (*weights)[i] *= compressed->scale();
-    }
-    fprintf(stderr, "%s value range: %f .. %f\n",
-            name, *std::min_element(weights->begin(), weights->end()),
-            *std::max_element(weights->begin(), weights->end()));
-    if (!output_->Write(weights->data(), sizeof(*weights), offset_)) {
-      fprintf(stderr, "Failed to write tensor %s to output file\n", name);
-      error_ = true;
-      return;
-    }
-    offset_ += sizeof(*weights);
-  }
-
- private:
-  hwy::ThreadPool& pool_;
-  std::unique_ptr<File> output_;
-  uint64_t offset_;
-  bool error_;
 };
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
