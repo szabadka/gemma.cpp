@@ -143,9 +143,6 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
 
 void LogWeightStats(Model model, const ByteStorageT& weights);
 
-void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
-                   ByteStorageT& weights, hwy::ThreadPool& pool);
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_

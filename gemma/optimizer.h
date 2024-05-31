@@ -26,6 +26,9 @@ namespace gcpp {
 void RandInitWeights(Model model, ByteStorageT& weights, hwy::ThreadPool& pool,
                      std::mt19937& gen);
 
+void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
+                   ByteStorageT& weights, hwy::ThreadPool& pool);
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_OPTIMIZER_H_

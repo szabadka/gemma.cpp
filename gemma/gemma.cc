@@ -1494,54 +1494,6 @@ void CompressWeightsT(gcpp::Model model, const Path& weights,
   }
 }
 
-
-class WeightUpdater {
- public:
-  explicit WeightUpdater(float lr) : lr_(lr) {}
-
-  template <size_t kCapacity>
-  void operator()(const char* name, const std::array<float, kCapacity>& grad,
-                  std::array<float, kCapacity>& weights) {
-    // TODO(szabadka) SIMDify this.
-    for (size_t i = 0; i < kCapacity; ++i) {
-      weights[i] += lr_ * grad[i];
-    }
-  }
-
- private:
-  float lr_;
-};
-
-template <typename TConfig>
-void UpdateWeights(const ByteStorageT& grad_u8, float scale,
-                   ByteStorageT& weights_u8, hwy::ThreadPool& pool) {
-  const auto& grad =
-      *reinterpret_cast<const WeightsF<TConfig>*>(grad_u8.get());
-  auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-  WeightUpdater updater(scale);
-  ForEachTensor2<float, TConfig>(updater, grad, weights);
-}
-
-void UpdateWeightsT(Model model, const ByteStorageT& grad, float scale,
-                   ByteStorageT& weights, hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      UpdateWeights<ConfigGemma2B>(grad, scale, weights, pool);
-      break;
-    case Model::GEMMA_7B:
-      UpdateWeights<ConfigGemma7B>(grad, scale, weights, pool);
-      break;
-    case Model::GRIFFIN_2B:
-      UpdateWeights<ConfigGriffin2B>(grad, scale, weights, pool);
-      break;
-    case Model::GEMMA_TINY:
-      UpdateWeights<ConfigGemmaTiny>(grad, scale, weights, pool);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -1550,7 +1502,6 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 
 HWY_EXPORT(LogWeightStatsT);
-HWY_EXPORT(UpdateWeightsT);
 HWY_EXPORT(LoadCompressedWeightsT);
 HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
@@ -1749,12 +1700,6 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
 
 void LogWeightStats(Model model, const ByteStorageT& weights) {
   return HWY_DYNAMIC_DISPATCH(LogWeightStatsT)(model, weights);
-}
-
-void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
-                   ByteStorageT& weights, hwy::ThreadPool& pool) {
-  return HWY_DYNAMIC_DISPATCH(UpdateWeightsT)(model, grad, scale, weights,
-                                              pool);
 }
 
 namespace {
