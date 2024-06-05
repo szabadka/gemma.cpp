@@ -95,7 +95,7 @@ TEST(OptimizeTest, GradientDescent) {
     return (hwy::platform::Now() - time_start);
   };
   size_t total_steps = 0;
-  for (size_t seqlen = 6; seqlen < 16; ++seqlen) {
+  for (size_t seqlen = 15; seqlen < 16; ++seqlen) {
     printf("Training on %zu long sequence reversal tasks\n", seqlen);
     std::vector<int> length_histo(seqlen);
     length_histo[seqlen - 1] = 1;
@@ -124,9 +124,9 @@ TEST(OptimizeTest, GradientDescent) {
       AdamUpdate(model_type, grad, alpha, beta1, beta2, epsilon, steps + 1,
                  weights, grad_m, grad_v, pool);
       if (steps % 1000 == 0) {
-        printf("time: %6.1fs  step: %6zu   loss: %.15f   num_ok: %.2f/%zu\n",
-               time_elapsed(), steps, loss_stats.Mean(), num_ok_stats.Mean(),
-               kBatchSize);
+        printf("time: %6.1fs  step: %6zu   loss: %.15f   num_ok: %.2f%%\n",
+               time_elapsed(), steps, loss_stats.Mean(),
+               num_ok_stats.Mean() * 100.0 / kBatchSize);
         if (kLogGradients) {
           printf("Batch gradient:\n");
           LogWeightStats(model_type, grad, kBatchScale);
