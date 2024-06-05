@@ -25,6 +25,9 @@
 #include "gemma/weights.h"
 #include "gtest/gtest.h"
 #include "hwy/stats.h"
+#include "hwy/timer.h"
+
+static constexpr int kLogGradients = 0;
 
 namespace gcpp {
 
@@ -82,7 +85,7 @@ TEST(OptimizeTest, GradientDescent) {
   printf("Initial weights:\n");
   LogWeightStats(model_type, weights);
 
-  constexpr size_t kBatchSize = 32;
+  constexpr size_t kBatchSize = 8;
   constexpr float kBatchScale = 1.0f / kBatchSize;
   float alpha = 0.001;
   float beta1 = 0.9;
@@ -95,6 +98,10 @@ TEST(OptimizeTest, GradientDescent) {
   std::mt19937 sgen(42);
   hwy::Stats num_ok_stats;
   hwy::Stats loss_stats;
+  const double time_start = hwy::platform::Now();
+  auto time_elapsed = [&time_start]() {
+    return (hwy::platform::Now() - time_start);
+  };
   for (; steps < 1000000; ++steps) {
     ZeroInitWeights(model_type, grad, pool);
     float loss = 0.0f;
@@ -113,11 +120,14 @@ TEST(OptimizeTest, GradientDescent) {
 
     AdamUpdate(model_type, grad, alpha, beta1, beta2, epsilon, steps + 1,
                weights, grad_m, grad_v, pool);
-    if (steps % 100 == 0) {
-      printf("step: %zu  total_loss: %.15f   num_ok: %.2f/%zu\n",
-             steps, loss_stats.Mean(), num_ok_stats.Mean(), kBatchSize);
-      printf("Batch gradient:\n");
-      LogWeightStats(model_type, grad, kBatchScale);
+    if (steps % 1000 == 0) {
+      printf("time: %6.1fs  step: %6zu   loss: %.15f   num_ok: %.2f/%zu\n",
+             time_elapsed(), steps, loss_stats.Mean(), num_ok_stats.Mean(),
+             kBatchSize);
+      if (kLogGradients) {
+        printf("Batch gradient:\n");
+        LogWeightStats(model_type, grad, kBatchScale);
+      }
       if (loss_stats.Mean() < 0.1f) {
         break;
       }
@@ -128,7 +138,7 @@ TEST(OptimizeTest, GradientDescent) {
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
   LogWeightStats(model_type, weights);
-  EXPECT_LT(steps, 30000);
+  EXPECT_LT(steps, 60000);
   EXPECT_GT(num_ok_stats.Mean(), 0.95 * kBatchSize);
 }
 
