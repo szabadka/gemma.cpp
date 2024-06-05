@@ -156,9 +156,9 @@ struct ConfigGemmaTiny {
                             kLayers);
   static constexpr int kModelDim = 64;
   static constexpr int kFFHiddenDim = 128;
-  static constexpr int kHeads = 4;
+  static constexpr int kHeads = 8;
   static constexpr int kKVHeads = 1;
-  static constexpr int kQKVDim = 16;  // query size == key size == value size
+  static constexpr int kQKVDim = 8;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
   static constexpr bool kPostNormScale = false;
