@@ -93,7 +93,7 @@ TEST(OptimizeTest, GradientDescent) {
   float epsilon = 1e-8;
 
   ReverseSequenceSampler training_task({
-      0, 0, 0, 0, 0, 0, 0, 0, 1});
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 1});
   size_t steps = 0;
   std::mt19937 sgen(42);
   hwy::Stats num_ok_stats;
