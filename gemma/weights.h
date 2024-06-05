@@ -133,7 +133,7 @@ ByteStorageT AllocateWeights(hwy::ThreadPool& pool) {
 #define GEMMA_CALL_TOP_FUNC3(name, member)      \
   func(name, weights1.member, weights2.member, weights3.member)
 #define GEMMA_CALL_TOP_FUNC4(name, member)       \
-  func(name, weights1.member, weights2.memeber,  \
+  func(name, weights1.member, weights2.member,  \
        weights3.member, weights4.member)
 
 #define GEMMA_CALL_LAYER_FUNC1(name, member)                          \
@@ -150,7 +150,7 @@ ByteStorageT AllocateWeights(hwy::ThreadPool& pool) {
 
 #define GEMMA_CALL_LAYER_FUNC4(name, member)                          \
   snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
-  func(name_buf, layer1.member, layer2.member, layer4.member)
+  func(name_buf, layer1.member, layer2.member, layer3.member, layer4.member)
 
 #define GEMMA_CALL_ALL_LAYER_FUNC(N)                                          \
   if (type == LayerAttentionType::kGemma) {                                   \
@@ -227,6 +227,25 @@ void ForEachTensor2(Func& func, const Weights<T, TConfig>& weights1,
   }
 }
 
+template <typename T, typename TConfig, class Func>
+void ForEachTensor4(Func& func, const Weights<T, TConfig>& weights1,
+                    Weights<T, TConfig>& weights2,
+                    Weights<T, TConfig>& weights3,
+                    Weights<T, TConfig>& weights4) {
+  GEMMA_CALL_TOP_FUNC4("embedding", embedder_input_embedding);
+  GEMMA_CALL_TOP_FUNC4("final_norm", final_norm_scale);
+  char name_buf[16];
+  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
+    auto type = TConfig::kLayerConfig[layer_idx];
+    const size_t idx = static_cast<size_t>(layer_idx);
+    const LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
+    LayerF<TConfig>& layer2 = *weights2.GetLayer(idx);
+    LayerF<TConfig>& layer3 = *weights3.GetLayer(idx);
+    LayerF<TConfig>& layer4 = *weights4.GetLayer(idx);
+    GEMMA_CALL_ALL_LAYER_FUNC(4)
+  }
+}
+
 #undef GEMMA_CALL_TOP_FUNC1
 #undef GEMMA_CALL_TOP_FUNC2
 #undef GEMMA_CALL_TOP_FUNC3
@@ -283,7 +302,8 @@ ByteStorageT AllocateWeights(Model model, hwy::ThreadPool& pool);
 
 void ZeroInitWeights(Model model, ByteStorageT& weights, hwy::ThreadPool& pool);
 
-void LogWeightStats(Model model, const ByteStorageT& weights);
+void LogWeightStats(Model model, const ByteStorageT& weights,
+                    float scale = 1.0f);
 
 }  // namespace gcpp
 

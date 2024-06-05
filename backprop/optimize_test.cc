@@ -24,6 +24,7 @@
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
 #include "gtest/gtest.h"
+#include "hwy/stats.h"
 
 namespace gcpp {
 
@@ -81,47 +82,54 @@ TEST(OptimizeTest, GradientDescent) {
   printf("Initial weights:\n");
   LogWeightStats(model_type, weights);
 
-  constexpr size_t kBatchSize = 8;
-  float learning_rate = 0.0005f;
+  constexpr size_t kBatchSize = 32;
+  constexpr float kBatchScale = 1.0f / kBatchSize;
+  float alpha = 0.001;
+  float beta1 = 0.9;
+  float beta2 = 0.999;
+  float epsilon = 1e-8;
 
   ReverseSequenceSampler training_task({
-      0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1});
+      0, 0, 0, 0, 0, 0, 1});
   size_t steps = 0;
-  float prev_loss = std::numeric_limits<float>::max();
-  size_t num_ok;
+  std::mt19937 sgen(42);
+  hwy::Stats num_ok_stats;
+  hwy::Stats loss_stats;
   for (; steps < 1000000; ++steps) {
-    std::mt19937 sgen(42);
     ZeroInitWeights(model_type, grad, pool);
-    float total_loss = 0.0f;
-    num_ok = 0;
+    float loss = 0.0f;
+    size_t num_ok = 0;
     for (size_t i = 0; i < kBatchSize; ++i) {
       Prompt prompt = training_task.Sample(sgen);
-      total_loss += CrossEntropyLossForwardPass(
+      loss += CrossEntropyLossForwardPass(
           model_type, prompt, weights, forward, pool);
       CrossEntropyLossBackwardPass(
           model_type, prompt, weights, forward, grad, backward, pool);
       num_ok += verify(prompt) ? 1 : 0;
     }
-    total_loss /= kBatchSize;
+    loss *= kBatchScale;
+    loss_stats.Notify(loss);
+    num_ok_stats.Notify(num_ok);
 
-    const float scale = -learning_rate / kBatchSize;
-    UpdateWeights(model_type, grad, scale, weights, pool);
-    printf("step: %zu  total_loss: %.15f   num_ok: %zu/%zu\n",
-           steps, total_loss, num_ok, kBatchSize);
+    AdamUpdate(model_type, grad, alpha, beta1, beta2, epsilon, steps + 1,
+               weights, grad_m, grad_v, pool);
     if (steps % 100 == 0) {
+      printf("step: %zu  total_loss: %.15f   num_ok: %.2f/%zu\n",
+             steps, loss_stats.Mean(), num_ok_stats.Mean(), kBatchSize);
       printf("Batch gradient:\n");
-      LogWeightStats(model_type, grad);
+      LogWeightStats(model_type, grad, kBatchScale);
+      if (loss_stats.Mean() < 0.1f) {
+        break;
+      }
+      loss_stats.Reset();
+      num_ok_stats.Reset();
     }
-    if (total_loss < 0.5f) {
-      break;
-    }
-    prev_loss = total_loss;
   }
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
   LogWeightStats(model_type, weights);
-  EXPECT_LT(steps, 3000);
-  EXPECT_EQ(num_ok, kBatchSize);
+  EXPECT_LT(steps, 30000);
+  EXPECT_GT(num_ok_stats.Mean(), 0.95 * kBatchSize);
 }
 
 }  // namespace gcpp

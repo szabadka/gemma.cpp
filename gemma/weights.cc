@@ -66,10 +66,10 @@ void ZeroInitWeights(Model model, ByteStorageT& weights,
 }
 
 namespace {
-void LogVec(const char* name, const float* data, size_t len) {
+void LogVec(const char* name, const float* data, float scale, size_t len) {
   hwy::Stats stats;
   for (size_t i = 0; i < len; ++i) {
-    stats.Notify(data[i]);
+    stats.Notify(data[i] * scale);
   }
   printf("%-20s  %12zu   %13.10f   %8.5f   %13.10f\n",
          name, len, stats.Min(), stats.Mean(), stats.Max());
@@ -77,33 +77,38 @@ void LogVec(const char* name, const float* data, size_t len) {
 
 class WeightLogger {
  public:
+  explicit WeightLogger(float scale) : scale_(scale) {}
   template <size_t N>
   void operator()(const char* name, const std::array<float, N>& tensor) {
-    LogVec(name, tensor.data(), N);
+    LogVec(name, tensor.data(), scale_, N);
     total_weights += N;
   }
   size_t total_weights = 0;
+
+ private:
+  float scale_;
 };
 
 template <typename TConfig>
-void LogWeightStats(const ByteStorageT& weights_u8) {
+    void LogWeightStats(const ByteStorageT& weights_u8, float scale) {
   const auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-  WeightLogger logger;
+  WeightLogger logger(scale);
   ForEachTensor1<float, TConfig>(logger, weights);
   printf("%-20s  %12zu\n", "Total", logger.total_weights);
 }
 }  // namespace
 
-void LogWeightStats(gcpp::Model model, const ByteStorageT& weights) {
+void LogWeightStats(gcpp::Model model, const ByteStorageT& weights,
+                    float scale) {
   switch (model) {
     case Model::GEMMA_2B:
-      return LogWeightStats<ConfigGemma2B>(weights);
+      return LogWeightStats<ConfigGemma2B>(weights, scale);
     case Model::GEMMA_7B:
-      return LogWeightStats<ConfigGemma7B>(weights);
+      return LogWeightStats<ConfigGemma7B>(weights, scale);
     case Model::GRIFFIN_2B:
-      return LogWeightStats<ConfigGriffin2B>(weights);
+      return LogWeightStats<ConfigGriffin2B>(weights, scale);
     case Model::GEMMA_TINY:
-      return LogWeightStats<ConfigGemmaTiny>(weights);
+      return LogWeightStats<ConfigGemmaTiny>(weights, scale);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
