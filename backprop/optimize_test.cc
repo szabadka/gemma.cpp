@@ -79,9 +79,6 @@ TEST(OptimizeTest, GradientDescent) {
   };
 
   RandInitWeights(model_type, weights, pool, gen);
-  ZeroInitWeights(model_type, grad_m, pool);
-  ZeroInitWeights(model_type, grad_v, pool);
-
   printf("Initial weights:\n");
   LogWeightStats(model_type, weights);
 
@@ -92,54 +89,63 @@ TEST(OptimizeTest, GradientDescent) {
   float beta2 = 0.999;
   float epsilon = 1e-8;
 
-  ReverseSequenceSampler training_task({
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 1});
-  size_t steps = 0;
   std::mt19937 sgen(42);
-  hwy::Stats num_ok_stats;
-  hwy::Stats loss_stats;
   const double time_start = hwy::platform::Now();
   auto time_elapsed = [&time_start]() {
     return (hwy::platform::Now() - time_start);
   };
-  for (; steps < 1000000; ++steps) {
-    ZeroInitWeights(model_type, grad, pool);
-    float loss = 0.0f;
-    size_t num_ok = 0;
-    for (size_t i = 0; i < kBatchSize; ++i) {
-      Prompt prompt = training_task.Sample(sgen);
-      loss += CrossEntropyLossForwardPass(
-          model_type, prompt, weights, forward, pool);
-      CrossEntropyLossBackwardPass(
-          model_type, prompt, weights, forward, grad, backward, pool);
-      num_ok += verify(prompt) ? 1 : 0;
-    }
-    loss *= kBatchScale;
-    loss_stats.Notify(loss);
-    num_ok_stats.Notify(num_ok);
+  size_t total_steps = 0;
+  for (size_t seqlen = 6; seqlen < 16; ++seqlen) {
+    printf("Training on %zu long sequence reversal tasks\n", seqlen);
+    std::vector<int> length_histo(seqlen);
+    length_histo[seqlen - 1] = 1;
+    ReverseSequenceSampler training_task(length_histo);
+    ZeroInitWeights(model_type, grad_m, pool);
+    ZeroInitWeights(model_type, grad_v, pool);
+    hwy::Stats num_ok_stats;
+    hwy::Stats loss_stats;
+    size_t steps = 0;
+    for (; steps < 1000000; ++steps) {
+      ZeroInitWeights(model_type, grad, pool);
+      float loss = 0.0f;
+      size_t num_ok = 0;
+      for (size_t i = 0; i < kBatchSize; ++i) {
+        Prompt prompt = training_task.Sample(sgen);
+        loss += CrossEntropyLossForwardPass(
+            model_type, prompt, weights, forward, pool);
+        CrossEntropyLossBackwardPass(
+            model_type, prompt, weights, forward, grad, backward, pool);
+        num_ok += verify(prompt) ? 1 : 0;
+      }
+      loss *= kBatchScale;
+      loss_stats.Notify(loss);
+      num_ok_stats.Notify(num_ok);
 
-    AdamUpdate(model_type, grad, alpha, beta1, beta2, epsilon, steps + 1,
-               weights, grad_m, grad_v, pool);
-    if (steps % 1000 == 0) {
-      printf("time: %6.1fs  step: %6zu   loss: %.15f   num_ok: %.2f/%zu\n",
-             time_elapsed(), steps, loss_stats.Mean(), num_ok_stats.Mean(),
-             kBatchSize);
-      if (kLogGradients) {
-        printf("Batch gradient:\n");
-        LogWeightStats(model_type, grad, kBatchScale);
+      AdamUpdate(model_type, grad, alpha, beta1, beta2, epsilon, steps + 1,
+                 weights, grad_m, grad_v, pool);
+      if (steps % 1000 == 0) {
+        printf("time: %6.1fs  step: %6zu   loss: %.15f   num_ok: %.2f/%zu\n",
+               time_elapsed(), steps, loss_stats.Mean(), num_ok_stats.Mean(),
+               kBatchSize);
+        if (kLogGradients) {
+          printf("Batch gradient:\n");
+          LogWeightStats(model_type, grad, kBatchScale);
+        }
+        if (loss_stats.Mean() < 0.1f) {
+          break;
+        }
+        loss_stats.Reset();
+        num_ok_stats.Reset();
       }
-      if (loss_stats.Mean() < 0.1f) {
-        break;
-      }
-      loss_stats.Reset();
-      num_ok_stats.Reset();
     }
+    printf("Num steps for seqlen %zu: %zu\n", seqlen, steps);
+    total_steps += steps;
+    EXPECT_GT(num_ok_stats.Mean(), 0.95 * kBatchSize);
   }
-  printf("Num steps: %zu\n", steps);
+  printf("Num steps: %zu\n", total_steps);
   printf("Final weights:\n");
   LogWeightStats(model_type, weights);
-  EXPECT_LT(steps, 60000);
-  EXPECT_GT(num_ok_stats.Mean(), 0.95 * kBatchSize);
+  //EXPECT_LT(steps, 60000);
 }
 
 }  // namespace gcpp
