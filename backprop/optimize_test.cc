@@ -82,7 +82,7 @@ TEST(OptimizeTest, GradientDescent) {
   printf("Initial weights:\n");
   LogWeightStats(model_type, weights);
 
-  constexpr size_t kBatchSize = 8;
+  constexpr size_t kBatchSize = 16;
   constexpr float kBatchScale = 1.0f / kBatchSize;
   float alpha = 0.001;
   float beta1 = 0.9;
