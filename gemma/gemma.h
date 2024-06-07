@@ -120,6 +120,10 @@ class Gemma {
   const ByteStorageT& Prefill() const { return prefill_u8_; }
   const ByteStorageT& Decode() const { return decode_u8_; }
 
+  void SetWeights(ByteStorageT&& weights_u8) {
+    weights_u8_ = std::move(weights_u8);
+  }
+
   // layers_output is optional; if set - it will be called with the activations
   // output after applying each layer.
   void Generate(const RuntimeConfig& runtime_config,

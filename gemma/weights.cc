@@ -168,9 +168,80 @@ struct LoadRawWeightsT {
     return weights_u8;
   }
 };
-
 #undef READ_WEIGHTS
 #undef SCALE_WEIGHTS
+
+#define WRITE_WEIGHTS(name)                                             \
+  do {                                                                  \
+    do_fwrite(&(layer_view->name), sizeof(layer_view->name));           \
+  } while (0)
+
+template <typename TConfig>
+struct SaveRawWeightsT {
+  void operator()(const ByteStorageT& weights_u8,
+                  const Path& checkpoint) const {
+    auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+
+    FILE* fptr = fopen(checkpoint.path.c_str(), "wb");
+    if (fptr == nullptr) {
+      HWY_ABORT("Failed to open model file %s for writing",
+                checkpoint.path.c_str());
+    }
+    bool ok = true;
+    uint64_t total_size = 0;
+    auto do_fwrite = [&](const void* var, size_t size) {
+      ok &= 1 == fwrite(var, size, 1, fptr);
+      total_size += size;
+    };
+    do_fwrite(&(weights->embedder_input_embedding),
+             sizeof(weights->embedder_input_embedding));
+    do_fwrite(&(weights->final_norm_scale), sizeof(weights->final_norm_scale));
+    for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
+      auto type = TConfig::kLayerConfig[layer];
+      const LayerF<TConfig>* layer_view = weights->GetLayer(layer);
+
+      if (type == LayerAttentionType::kGemma) {
+        WRITE_WEIGHTS(attn_vec_einsum_w);
+        WRITE_WEIGHTS(qkv_einsum_w);
+      } else {
+        WRITE_WEIGHTS(griffin.linear_x_w);
+        WRITE_WEIGHTS(griffin.linear_x_biases);
+        WRITE_WEIGHTS(griffin.linear_y_w);
+        WRITE_WEIGHTS(griffin.linear_y_biases);
+        WRITE_WEIGHTS(griffin.linear_out_w);
+        WRITE_WEIGHTS(griffin.linear_out_biases);
+        WRITE_WEIGHTS(griffin.conv_w);
+        WRITE_WEIGHTS(griffin.conv_biases);
+        WRITE_WEIGHTS(griffin.gate_w);
+        WRITE_WEIGHTS(griffin.gate_biases);
+        WRITE_WEIGHTS(griffin.a);
+      }
+      WRITE_WEIGHTS(gating_einsum_w);
+      WRITE_WEIGHTS(linear_w);
+      WRITE_WEIGHTS(pre_attention_norm_scale);
+      WRITE_WEIGHTS(pre_ffw_norm_scale);
+      if (TConfig::kPostNormScale) {
+        WRITE_WEIGHTS(post_attention_norm_scale);
+        WRITE_WEIGHTS(post_ffw_norm_scale);
+      }
+      if (TConfig::kFFBiases) {
+        WRITE_WEIGHTS(ffw_gating_biases);
+        WRITE_WEIGHTS(ffw_output_biases);
+      }
+      if (TConfig::kSoftmaxAttnOutputBiases &&
+          type == LayerAttentionType::kGemma) {
+        WRITE_WEIGHTS(attention_output_biases);
+      }
+    }
+    if (!ok) {
+      HWY_ABORT("Failed to write to %s - storage full?",
+                checkpoint.path.c_str());
+    }
+    HWY_ASSERT(0 == fclose(fptr));
+  }
+};
+
+#undef WRITE_WEIGHTS
 }  // namespace
 
 ByteStorageT LoadRawWeights(const Path& weights, Model model_type,
@@ -178,6 +249,11 @@ ByteStorageT LoadRawWeights(const Path& weights, Model model_type,
                             bool scale_for_compression) {
   return CallForModelAndWeight<LoadRawWeightsT>(
       model_type, weight_type, weights, pool, scale_for_compression);
+}
+
+void SaveRawWeights(const ByteStorageT& weights, const Path& checkpoint,
+                    Model model_type) {
+  return CallForModel<float, SaveRawWeightsT>(model_type, weights, checkpoint);
 }
 
 namespace {

@@ -26,7 +26,7 @@
 namespace gcpp {
 
 // Setting this to false will load and use uncompressed weights.
-constexpr bool kWeightsAreCompressed = true;
+constexpr bool kWeightsAreCompressed = false;
 
 // ----------------------------------------------------------------------------
 // Uncompressed
@@ -334,6 +334,9 @@ class WeightsWrapper {
 ByteStorageT LoadRawWeights(const Path& weights, Model model_type,
                             Type weight_type, hwy::ThreadPool& pool,
                             bool scale_for_compression);
+
+void SaveRawWeights(const ByteStorageT& weights, const Path& checkpoint,
+                    Model model_type);
 
 // For gemma.cc; calls LoadRawWeights if !kWeightsAreCompressed.
 ByteStorageT LoadWeights(const Path& weights, Model model_type,
