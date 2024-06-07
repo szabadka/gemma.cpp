@@ -138,3 +138,6 @@ endif()  # GEMMA_ENABLE_TESTS
 
 add_executable(compress_weights gemma/compress_weights.cc)
 target_link_libraries(compress_weights libgemma hwy hwy_contrib)
+
+add_executable(train backprop/train.cc)
+target_link_libraries(train libgemma hwy hwy_contrib)
