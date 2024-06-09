@@ -145,7 +145,7 @@ template <typename TWeight>
 struct ConfigGemmaTiny {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
-  static constexpr int kSeqLen = 64;
+  static constexpr int kSeqLen = 128;
   static constexpr int kVocabSize = 256;
   static constexpr std::array<LayerAttentionType, 3> kLayerConfig =
       FixedLayerConfig<3>(LayerAttentionType::kGemma);
