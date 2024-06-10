@@ -169,22 +169,19 @@ int Run(Args& args) {
   float beta2 = 0.999;
   float epsilon = 1e-8;
 
-  const double time_start = hwy::platform::Now();
-  auto time_elapsed = [&time_start]() {
-    return (hwy::platform::Now() - time_start);
-  };
-
   CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad_m,
                                           pool);
   CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad_v,
                                           pool);
 
+  const double start_t = hwy::platform::Now();
   size_t batches = 0;
   size_t update_steps = 0;
   size_t pos = 0;
   float total_bits = 0.0f;
   float epoch_bits = 0.0f;
   size_t epoch_start = 0;
+  double epoch_t = hwy::platform::Now();
   gcpp::KVCache kv_cache = gcpp::KVCache::Create(model_type);
   while (pos < corpus_data.size()) {
     size_t batch_start = pos;
@@ -193,7 +190,7 @@ int Run(Args& args) {
       epoch_bits += ComputeCrossEntropy(
           gemma, seq_len, prompt.tokens, kv_cache, 0);
     }
-    size_t updates_per_batch = batches < 1000 ? 10 : 1;
+    size_t updates_per_batch = batches < 10 ? 100 : batches < 100 ? 10 : 1;
     for (size_t iter = 0; iter < updates_per_batch; ++iter) {
       pos = batch_start;
       CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad,
@@ -209,17 +206,23 @@ int Run(Args& args) {
                  ++update_steps, gemma.Weights(), grad_m, grad_v, pool);
     }
     ++batches;
-    if (batches % 100 == 0 || pos == corpus_data.size()) {
+    if (update_steps % 1000 == 0 || pos == corpus_data.size()) {
       total_bits += epoch_bits;
-      const float speed_kbps = pos * 1.0 / 1024.0 / time_elapsed();
+      const double t = hwy::platform::Now();
+      const double total_elapsed = t - start_t;
+      const double epoch_elapsed = t - epoch_t;
       const size_t epoch_bytes = pos - epoch_start;
+      const float epoch_speed = epoch_bytes * 1.0 / 1024.0 / epoch_elapsed;
+      const float total_speed = pos * 1.0 / 1024.0 / total_elapsed;
       const float epoch_loss = epoch_bits / epoch_bytes;
       const float total_loss = total_bits / pos;
-      printf("time: %6.1fs   step: %6zu    pos: %8zu   speed: %6.2f kB/s   "
-             "loss: %6.3f (epoch)  %6.3f (total)\n",
-             time_elapsed(), batches, pos, speed_kbps, epoch_loss, total_loss);
+      printf("time: %6.1fs   pos: %10zu   "
+             "speed: %6.2f kB/s (cur)  %6.2f kB/s (total)   "
+             "loss: %6.3f (cur)  %6.3f (total)\n", total_elapsed, pos,
+             epoch_speed, total_speed, epoch_loss, total_loss);
       epoch_bits = 0.0f;
       epoch_start = pos;
+      epoch_t = t;
       if (!args.weights_out.path.empty()) {
         SaveRawWeights(gemma.Weights(), args.weights_out, model_type);
       }
