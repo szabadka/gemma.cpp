@@ -138,12 +138,12 @@ int Run(Args& args) {
 
   Model model_type = args.model_type;
   Type weight_type = Type::kF32;
-  ByteStorageT grad =
-      CallForModelAndWeight<AllocateWeightsF>(model_type, weight_type, pool);
-  ByteStorageT grad_m =
-      CallForModelAndWeight<AllocateWeightsF>(model_type, weight_type, pool);
-  ByteStorageT grad_v =
-      CallForModelAndWeight<AllocateWeightsF>(model_type, weight_type, pool);
+  ByteStorageT grad = CallForModelAndWeight<AllocateCompressedWeights>(
+      model_type, weight_type, pool);
+  ByteStorageT grad_m = CallForModelAndWeight<AllocateCompressedWeights>(
+      model_type, weight_type, pool);
+  ByteStorageT grad_v = CallForModelAndWeight<AllocateCompressedWeights>(
+      model_type, weight_type, pool);
   ByteStorageT forward =
       CallForModelAndWeight<AllocateForwardPass>(model_type, weight_type);
   ByteStorageT backward =
@@ -152,14 +152,8 @@ int Run(Args& args) {
 
   Gemma gemma(GemmaTokenizer(), model_type, weight_type, pool);
 
-  if (!args.weights_in.path.empty()) {
-    ByteStorageT weights = LoadRawWeights(args.weights_in, model_type,
-                                          weight_type, pool, false);
-    gemma.SetWeights(std::move(weights));
-  } else {
-    std::mt19937 gen(42);
-    RandInitWeights(model_type, weight_type, gemma.Weights(), pool, gen);
-  }
+  std::mt19937 gen(42);
+  RandInitWeights(model_type, weight_type, gemma.Weights(), pool, gen);
   printf("Initial weights:\n");
   LogWeightStats(model_type, weight_type, gemma.Weights());
 
@@ -169,10 +163,10 @@ int Run(Args& args) {
   float beta2 = 0.999;
   float epsilon = 1e-8;
 
-  CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad_m,
-                                          pool);
-  CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad_v,
-                                          pool);
+  CallForModelAndWeight<ZeroInitCompressedWeights>(
+      model_type, weight_type, grad_m, pool);
+  CallForModelAndWeight<ZeroInitCompressedWeights>(
+      model_type, weight_type, grad_v, pool);
 
   const double start_t = hwy::platform::Now();
   size_t batches = 0;
@@ -193,8 +187,8 @@ int Run(Args& args) {
     size_t updates_per_batch = batches < 10 ? 100 : batches < 100 ? 10 : 1;
     for (size_t iter = 0; iter < updates_per_batch; ++iter) {
       pos = batch_start;
-      CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad,
-                                              pool);
+      CallForModelAndWeight<ZeroInitCompressedWeights>(
+          model_type, weight_type, grad, pool);
       for (size_t i = 0; i < kBatchSize && pos < corpus_data.size(); ++i) {
         Prompt prompt = CreatePrompt(corpus_data, seq_len, pos);
         CrossEntropyLossForwardPass(
@@ -223,9 +217,6 @@ int Run(Args& args) {
       epoch_bits = 0.0f;
       epoch_start = pos;
       epoch_t = t;
-      if (!args.weights_out.path.empty()) {
-        SaveRawWeights(gemma.Weights(), args.weights_out, model_type);
-      }
     }
   }
 
