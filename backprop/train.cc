@@ -179,28 +179,37 @@ int Run(Args& args) {
   CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad_v,
                                           pool);
 
-  size_t steps = 0;
+  size_t batches = 0;
+  size_t update_steps = 0;
   size_t pos = 0;
   float total_bits = 0.0f;
   float epoch_bits = 0.0f;
   size_t epoch_start = 0;
   gcpp::KVCache kv_cache = gcpp::KVCache::Create(model_type);
   while (pos < corpus_data.size()) {
-    CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad,
-                                            pool);
+    size_t batch_start = pos;
     for (size_t i = 0; i < kBatchSize && pos < corpus_data.size(); ++i) {
       Prompt prompt = CreatePrompt(corpus_data, seq_len, pos);
       epoch_bits += ComputeCrossEntropy(
           gemma, seq_len, prompt.tokens, kv_cache, 0);
-      CrossEntropyLossForwardPass(
-          model_type, prompt, gemma.Weights(), forward, pool);
-      CrossEntropyLossBackwardPass(
-          model_type, prompt, gemma.Weights(), forward, grad, backward, pool);
     }
-    AdamUpdate(model_type, weight_type, grad, alpha, beta1, beta2, epsilon,
-               steps + 1, gemma.Weights(), grad_m, grad_v, pool);
-    ++steps;
-    if (steps % 1000 == 0 || pos == corpus_data.size()) {
+    size_t updates_per_batch = batches < 1000 ? 10 : 1;
+    for (size_t iter = 0; iter < updates_per_batch; ++iter) {
+      pos = batch_start;
+      CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad,
+                                              pool);
+      for (size_t i = 0; i < kBatchSize && pos < corpus_data.size(); ++i) {
+        Prompt prompt = CreatePrompt(corpus_data, seq_len, pos);
+        CrossEntropyLossForwardPass(
+            model_type, prompt, gemma.Weights(), forward, pool);
+        CrossEntropyLossBackwardPass(
+            model_type, prompt, gemma.Weights(), forward, grad, backward, pool);
+      }
+      AdamUpdate(model_type, weight_type, grad, alpha, beta1, beta2, epsilon,
+                 ++update_steps, gemma.Weights(), grad_m, grad_v, pool);
+    }
+    ++batches;
+    if (batches % 100 == 0 || pos == corpus_data.size()) {
       total_bits += epoch_bits;
       const float speed_kbps = pos * 1.0 / 1024.0 / time_elapsed();
       const size_t epoch_bytes = pos - epoch_start;
@@ -208,7 +217,7 @@ int Run(Args& args) {
       const float total_loss = total_bits / pos;
       printf("time: %6.1fs   step: %6zu    pos: %8zu   speed: %6.2f kB/s   "
              "loss: %6.3f (epoch)  %6.3f (total)\n",
-             time_elapsed(), steps, pos, speed_kbps, epoch_loss, total_loss);
+             time_elapsed(), batches, pos, speed_kbps, epoch_loss, total_loss);
       epoch_bits = 0.0f;
       epoch_start = pos;
       if (!args.weights_out.path.empty()) {
