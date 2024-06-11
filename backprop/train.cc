@@ -157,7 +157,7 @@ int Run(Args& args) {
   printf("Initial weights:\n");
   LogWeightStats(model_type, weight_type, gemma.Weights());
 
-  constexpr size_t kBatchSize = 8;
+  constexpr size_t kBatchSize = 4;
   float alpha = 0.001;
   float beta1 = 0.9;
   float beta2 = 0.999;
